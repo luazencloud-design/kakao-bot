@@ -1,15 +1,18 @@
 // scripts/ingest.js
 //
 // One-time job: get the source text (preferring OCR output if
-// present, falling back to pdf-parse on the PDF), split it into
-// chunks, embed each chunk with Voyage AI, and save the result to
-// data/chunks.json.
+// present, falling back to direct extraction from the source file),
+// split it into chunks, embed each chunk with Gemini, and save the
+// result to data/chunks.json.
+//
+// Supported source formats: .pdf, .pptx
 //
 // Usage:
 //   npm run ingest
 //
-// If the source PDF is scanned (image-based), run "npm run ocr"
-// first to produce data/extracted.txt.
+// If the source is scanned (image-based) and direct extraction
+// returns very little text, run "npm run ocr" first to produce
+// data/extracted.txt, then re-run ingest.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,13 +23,19 @@ import 'dotenv/config';
 // file at import time. Importing the library file directly avoids it.
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 
+// officeparser handles .pptx (and other office formats) via xml2js +
+// unzipper. We only use it for PPTX here because its PDF code path
+// is broken on Windows + ESM (uses pdf.js with a buggy worker setup).
+import { parseOffice } from 'officeparser';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
-const PDF_PATH = process.env.PDF_PATH;
+// SOURCE_FILE is the new env var; PDF_PATH is kept as a fallback.
+const SOURCE_FILE_RAW = process.env.SOURCE_FILE || process.env.PDF_PATH;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const EMBED_MODEL = process.env.EMBED_MODEL || 'text-embedding-004';
+const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
 
 // ---------- Validate env ----------
 function die(msg) {
@@ -36,7 +45,7 @@ function die(msg) {
 if (!GEMINI_API_KEY) die('GEMINI_API_KEY is not set.');
 
 // ---------- Source text loading ----------
-// Prefers OCR output (data/extracted.txt) over PDF text extraction.
+// Prefers OCR output (data/extracted.txt) over direct extraction.
 async function loadSourceText() {
   const extractedPath = path.join(ROOT, 'data', 'extracted.txt');
 
@@ -48,29 +57,46 @@ async function loadSourceText() {
     return text;
   }
 
-  if (!PDF_PATH) {
+  if (!SOURCE_FILE_RAW) {
     die(
-      'No OCR text file found and PDF_PATH is not set. ' +
-        'Either set PDF_PATH in .env or run "npm run ocr" first.',
-    );
-  }
-  if (!fs.existsSync(PDF_PATH)) {
-    die(`No OCR text file found and PDF not found at: ${PDF_PATH}`);
-  }
-
-  console.log(`[ingest] Reading PDF directly: ${PDF_PATH}`);
-  const dataBuffer = fs.readFileSync(PDF_PATH);
-  const pdf = await pdfParse(dataBuffer);
-  console.log(`[ingest] Pages: ${pdf.numpages}, Chars: ${pdf.text.length}`);
-
-  if (!pdf.text || pdf.text.trim().length < 50) {
-    die(
-      'Very little text extracted. The PDF appears to be scanned (image-based). ' +
-        'Run "npm run ocr" first to OCR the PDF with Gemini, then try again.',
+      'No OCR text file found and SOURCE_FILE is not set. ' +
+        'Either set SOURCE_FILE in .env or run "npm run ocr" first.',
     );
   }
 
-  return pdf.text;
+  const SOURCE_FILE = path.isAbsolute(SOURCE_FILE_RAW)
+    ? SOURCE_FILE_RAW
+    : path.resolve(ROOT, SOURCE_FILE_RAW);
+
+  if (!fs.existsSync(SOURCE_FILE)) {
+    die(`No OCR text file found and source file not found at: ${SOURCE_FILE}`);
+  }
+
+  const ext = path.extname(SOURCE_FILE).toLowerCase();
+  console.log(`[ingest] Reading source directly: ${SOURCE_FILE} (${ext})`);
+
+  let text = '';
+  if (ext === '.pdf') {
+    const dataBuffer = fs.readFileSync(SOURCE_FILE);
+    const pdf = await pdfParse(dataBuffer);
+    console.log(`[ingest] Pages: ${pdf.numpages}, Chars: ${pdf.text.length}`);
+    text = pdf.text;
+  } else if (ext === '.pptx') {
+    text = await parseOffice(SOURCE_FILE);
+    console.log(`[ingest] Chars: ${text.length}`);
+  } else {
+    die(`Unsupported file extension: ${ext}. Supported: .pdf, .pptx`);
+  }
+
+  if (!text || text.trim().length < 50) {
+    die(
+      `Very little text extracted from ${SOURCE_FILE}. ` +
+        'The file may be scanned or image-based. ' +
+        'Run "npm run ocr" first to OCR with Gemini, then re-run ingest.',
+    );
+  }
+
+  return text;
 }
 
 // ---------- Chunking ----------

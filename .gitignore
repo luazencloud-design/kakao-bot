@@ -3,3 +3,9 @@ node_modules/
 data/extracted.txt
 *.log
 .DS_Store
+
+# Source documents (PDF/PPTX) — stored locally only, not pushed to git.
+# They can be large and sensitive, and Vercel doesn't need them at
+# runtime (the deployed function only reads data/chunks.json).
+source-files/*
+!source-files/.gitkeep
