@@ -1,19 +1,24 @@
 // scripts/ocr.js
 //
-// One-time job: upload a source document (PDF or PPTX) to Gemini's
-// Files API, have Gemini read every page/slide (including scanned
-// or image-based content), and save the extracted plain text to
-// data/extracted.txt.
+// Multi-file OCR job: walks source-files/, finds every .pdf and
+// .pptx, uploads each to Gemini's Files API, and writes the
+// extracted text to data/extracted/<basename>.txt as a cache.
 //
-// Why this exists: scripts/ingest.js uses pdf-parse / officeparser
-// for direct text extraction. That fails on scanned PDFs or
-// image-only PPTX slides because there's no embedded text layer —
-// only images. Gemini's multimodal capability can "read" the
-// images and give us usable text.
+// Caching: if data/extracted/<basename>.txt already exists, the
+// file is skipped. Pass --force to re-OCR everything.
+//
+// Single-file override: if SOURCE_FILE is set in .env, only that
+// file is processed (legacy behavior).
+//
+// Why this exists: scripts/ingest.js does direct text extraction
+// (pdf-parse / officeparser), which fails on scanned PDFs and
+// image-only PPTX slides because there's no embedded text layer.
+// Gemini's multimodal capability "reads" the page images and gives
+// us usable text.
 //
 // Usage:
-//   npm run ocr
-//   (then) npm run ingest
+//   npm run ocr            # process new files only (uses cache)
+//   npm run ocr -- --force # re-OCR everything
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,32 +29,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
-// SOURCE_FILE is the new env var; PDF_PATH is kept as a fallback
-// for backward compat with older .env files.
-const SOURCE_FILE_RAW = process.env.SOURCE_FILE || process.env.PDF_PATH;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
+const SOURCE_FILE_OVERRIDE = process.env.SOURCE_FILE || process.env.PDF_PATH;
 
-function die(msg) {
-  console.error(`[ocr] ERROR: ${msg}`);
-  process.exit(1);
-}
+const SOURCE_DIR = path.join(ROOT, 'source-files');
+const EXTRACTED_DIR = path.join(ROOT, 'data', 'extracted');
 
-if (!SOURCE_FILE_RAW) {
-  die('SOURCE_FILE (or PDF_PATH) is not set. Check your .env file.');
-}
-if (!GEMINI_API_KEY) {
-  die('GEMINI_API_KEY is not set. Check your .env file.');
-}
-
-// Resolve relative paths against the project root.
-const SOURCE_FILE = path.isAbsolute(SOURCE_FILE_RAW)
-  ? SOURCE_FILE_RAW
-  : path.resolve(ROOT, SOURCE_FILE_RAW);
-
-if (!fs.existsSync(SOURCE_FILE)) {
-  die(`Source file not found at: ${SOURCE_FILE}`);
-}
+const force = process.argv.includes('--force');
 
 // Map file extension -> Gemini-acceptable MIME type.
 const MIME_BY_EXT = {
@@ -57,25 +44,49 @@ const MIME_BY_EXT = {
   '.pptx':
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
-const ext = path.extname(SOURCE_FILE).toLowerCase();
-const MIME_TYPE = MIME_BY_EXT[ext];
-if (!MIME_TYPE) {
-  die(
-    `Unsupported file extension: ${ext}. Supported: ${Object.keys(MIME_BY_EXT).join(', ')}`,
-  );
+
+function die(msg) {
+  console.error(`[ocr] ERROR: ${msg}`);
+  process.exit(1);
 }
 
-// ---------- Upload via Gemini Files API (resumable upload) ----------
+if (!GEMINI_API_KEY) die('GEMINI_API_KEY is not set. Check your .env file.');
+
+// ---------- Source file discovery ----------
+function discoverSourceFiles() {
+  // SOURCE_FILE override: legacy single-file mode
+  if (SOURCE_FILE_OVERRIDE) {
+    const abs = path.isAbsolute(SOURCE_FILE_OVERRIDE)
+      ? SOURCE_FILE_OVERRIDE
+      : path.resolve(ROOT, SOURCE_FILE_OVERRIDE);
+    if (!fs.existsSync(abs)) {
+      die(`SOURCE_FILE not found: ${abs}`);
+    }
+    return [abs];
+  }
+
+  // Default: walk source-files/
+  if (!fs.existsSync(SOURCE_DIR)) {
+    die(`source-files/ directory not found at ${SOURCE_DIR}`);
+  }
+  const entries = fs.readdirSync(SOURCE_DIR);
+  const supported = entries
+    .filter((name) => MIME_BY_EXT[path.extname(name).toLowerCase()])
+    .sort()
+    .map((name) => path.join(SOURCE_DIR, name));
+  return supported;
+}
+
+// ---------- Gemini Files API: resumable upload ----------
 async function uploadFile(filePath, mimeType) {
   const fileBuffer = fs.readFileSync(filePath);
   const fileSize = fileBuffer.length;
   const displayName = path.basename(filePath);
 
   console.log(
-    `[ocr] Uploading ${displayName} (${(fileSize / 1024 / 1024).toFixed(1)} MB, ${mimeType})`,
+    `[ocr]   Uploading (${(fileSize / 1024 / 1024).toFixed(1)} MB, ${mimeType})...`,
   );
 
-  // Step 1: start a resumable upload session
   const startResp = await fetch(
     `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_API_KEY}`,
     {
@@ -100,8 +111,6 @@ async function uploadFile(filePath, mimeType) {
   const uploadUrl = startResp.headers.get('x-goog-upload-url');
   if (!uploadUrl) throw new Error('No upload URL in response headers');
 
-  // Step 2: upload the bytes and finalize
-  console.log('[ocr] Upload URL obtained, sending bytes...');
   const uploadResp = await fetch(uploadUrl, {
     method: 'POST',
     headers: {
@@ -118,12 +127,9 @@ async function uploadFile(filePath, mimeType) {
     );
   }
 
-  const uploadData = await uploadResp.json();
-  console.log(`[ocr] Uploaded: ${uploadData.file.uri}`);
-  return uploadData.file;
+  return (await uploadResp.json()).file;
 }
 
-// ---------- Poll until the file is ACTIVE ----------
 async function waitForActive(fileName) {
   const url = `https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${GEMINI_API_KEY}`;
   for (let i = 0; i < 60; i++) {
@@ -132,20 +138,13 @@ async function waitForActive(fileName) {
       throw new Error(`Poll failed ${resp.status}: ${await resp.text()}`);
     }
     const data = await resp.json();
-    if (data.state === 'ACTIVE') {
-      console.log('[ocr] File is ACTIVE');
-      return data;
-    }
-    if (data.state === 'FAILED') {
-      throw new Error('File processing FAILED on Gemini side');
-    }
-    console.log(`[ocr] File state: ${data.state}, waiting 2s...`);
+    if (data.state === 'ACTIVE') return data;
+    if (data.state === 'FAILED') throw new Error('File processing FAILED on Gemini side');
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error('File did not become ACTIVE within 2 minutes');
 }
 
-// ---------- Ask Gemini to read & transcribe the document ----------
 async function extractText(fileUri, mimeType) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/` +
@@ -176,7 +175,6 @@ async function extractText(fileUri, mimeType) {
     },
   });
 
-  // Retry loop for transient errors (503 UNAVAILABLE, 429 rate limit, 5xx).
   const maxAttempts = 5;
   let lastErr = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -191,16 +189,14 @@ async function extractText(fileUri, mimeType) {
       lastErr = `Gemini ${resp.status}: ${errText.slice(0, 200)}`;
       if (attempt < maxAttempts) {
         const waitMs = 15000 * attempt;
-        console.warn(`[ocr] ${lastErr.slice(0, 120)}`);
+        console.warn(`[ocr]   ${lastErr.slice(0, 120)}`);
         console.warn(
-          `[ocr] attempt ${attempt}/${maxAttempts}, waiting ${waitMs / 1000}s before retry...`,
+          `[ocr]   attempt ${attempt}/${maxAttempts}, waiting ${waitMs / 1000}s...`,
         );
         await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }
-      throw new Error(
-        `Gemini API failed after ${maxAttempts} attempts: ${lastErr}`,
-      );
+      throw new Error(`Gemini failed after ${maxAttempts} attempts: ${lastErr}`);
     }
 
     if (!resp.ok) {
@@ -220,41 +216,92 @@ async function extractText(fileUri, mimeType) {
       );
     }
 
-    const truncated = candidate.finishReason === 'MAX_TOKENS';
-    return { text, truncated };
+    return { text, truncated: candidate.finishReason === 'MAX_TOKENS' };
   }
 
   throw new Error(`extractText: exhausted retries. Last error: ${lastErr}`);
 }
 
+// ---------- Process one source file ----------
+async function ocrFile(filePath) {
+  const basename = path.basename(filePath);
+  const stem = path.basename(filePath, path.extname(filePath));
+  const cachePath = path.join(EXTRACTED_DIR, `${stem}.txt`);
+
+  if (!force && fs.existsSync(cachePath)) {
+    const cachedSize = fs.statSync(cachePath).size;
+    console.log(`[ocr] SKIP cached (${cachedSize}b): ${basename}`);
+    return { status: 'skipped' };
+  }
+
+  console.log(`[ocr] Processing: ${basename}`);
+
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeType = MIME_BY_EXT[ext];
+  if (!mimeType) {
+    console.warn(`[ocr]   Unsupported extension ${ext}, skipping`);
+    return { status: 'unsupported' };
+  }
+
+  try {
+    const file = await uploadFile(filePath, mimeType);
+    await waitForActive(file.name);
+    console.log('[ocr]   Extracting text...');
+    const { text, truncated } = await extractText(file.uri, file.mimeType);
+
+    if (truncated) {
+      console.warn(
+        `[ocr]   WARNING: ${basename} output truncated at max tokens. ` +
+          `Consider splitting the file.`,
+      );
+    }
+
+    fs.writeFileSync(cachePath, text, 'utf-8');
+    console.log(`[ocr]   Saved ${text.length} chars to data/extracted/${stem}.txt`);
+    return { status: 'processed' };
+  } catch (err) {
+    console.error(`[ocr]   FAILED for ${basename}: ${err.message}`);
+    return { status: 'failed', err };
+  }
+}
+
 // ---------- Main ----------
 async function main() {
-  console.log(`[ocr] Source: ${SOURCE_FILE}`);
-  console.log(`[ocr] Type:   ${MIME_TYPE}`);
-  console.log(`[ocr] Model:  ${GEMINI_MODEL}`);
+  const sourceFiles = discoverSourceFiles();
 
-  const file = await uploadFile(SOURCE_FILE, MIME_TYPE);
-  await waitForActive(file.name);
-
-  console.log('[ocr] Extracting text (this may take 30-90s)...');
-  const { text, truncated } = await extractText(file.uri, file.mimeType);
-
-  if (truncated) {
-    console.warn(
-      '[ocr] WARNING: output was truncated at max tokens. ' +
-        'The extracted text may be incomplete. ' +
-        'Consider splitting the document or using gemini-2.5-pro.',
+  if (sourceFiles.length === 0) {
+    die(
+      'No source files found. Add .pdf or .pptx files to source-files/ ' +
+        'or set SOURCE_FILE in .env.',
     );
   }
 
-  console.log(`[ocr] Extracted ${text.length} characters`);
+  fs.mkdirSync(EXTRACTED_DIR, { recursive: true });
 
-  const outDir = path.join(ROOT, 'data');
-  fs.mkdirSync(outDir, { recursive: true });
-  const outPath = path.join(outDir, 'extracted.txt');
-  fs.writeFileSync(outPath, text, 'utf-8');
-  console.log(`[ocr] Saved to ${outPath}`);
-  console.log('[ocr] Next step: run "npm run ingest"');
+  console.log(`[ocr] Found ${sourceFiles.length} source file(s)`);
+  console.log(`[ocr] Model: ${GEMINI_MODEL}`);
+  console.log(`[ocr] Force re-OCR: ${force}`);
+  console.log('');
+
+  const counts = { processed: 0, skipped: 0, failed: 0, unsupported: 0 };
+  for (const filePath of sourceFiles) {
+    const { status } = await ocrFile(filePath);
+    counts[status] = (counts[status] || 0) + 1;
+  }
+
+  console.log('');
+  console.log(
+    `[ocr] Done: ${counts.processed} processed, ${counts.skipped} skipped (cached), ` +
+      `${counts.failed} failed, ${counts.unsupported} unsupported`,
+  );
+
+  if (counts.processed > 0 || counts.skipped > 0) {
+    console.log('[ocr] Next step: run "npm run ingest"');
+  }
+
+  if (counts.failed > 0) {
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {

@@ -1,107 +1,107 @@
 // scripts/ingest.js
 //
-// One-time job: get the source text (preferring OCR output if
-// present, falling back to direct extraction from the source file),
-// split it into chunks, embed each chunk with Gemini, and save the
-// result to data/chunks.json.
+// Multi-file ingestion: walks source-files/, loads text for each
+// .pdf and .pptx (preferring the OCR cache in data/extracted/),
+// chunks each file, embeds every chunk with Gemini, and writes a
+// unified data/chunks.json with source metadata so answers can
+// cite which document they came from.
 //
-// Supported source formats: .pdf, .pptx
+// Single-file override: if SOURCE_FILE is set in .env, only that
+// file is processed (legacy behavior).
+//
+// Text-loading strategy per file:
+//   1. If data/extracted/<basename>.txt exists -> use it (OCR cache)
+//   2. Else try direct text extraction:
+//        .pdf  -> pdf-parse
+//        .pptx -> officeparser
+//   3. If text length < 50 chars -> error, ask user to run "npm run ocr"
 //
 // Usage:
 //   npm run ingest
-//
-// If the source is scanned (image-based) and direct extraction
-// returns very little text, run "npm run ocr" first to produce
-// data/extracted.txt, then re-run ingest.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 
-// pdf-parse's index.js contains debug code that tries to open a test
-// file at import time. Importing the library file directly avoids it.
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
-
-// officeparser handles .pptx (and other office formats) via xml2js +
-// unzipper. We only use it for PPTX here because its PDF code path
-// is broken on Windows + ESM (uses pdf.js with a buggy worker setup).
 import { parseOffice } from 'officeparser';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
-// SOURCE_FILE is the new env var; PDF_PATH is kept as a fallback.
-const SOURCE_FILE_RAW = process.env.SOURCE_FILE || process.env.PDF_PATH;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
+const SOURCE_FILE_OVERRIDE = process.env.SOURCE_FILE || process.env.PDF_PATH;
 
-// ---------- Validate env ----------
+const SOURCE_DIR = path.join(ROOT, 'source-files');
+const EXTRACTED_DIR = path.join(ROOT, 'data', 'extracted');
+const CHUNKS_PATH = path.join(ROOT, 'data', 'chunks.json');
+
+const SUPPORTED_EXTS = new Set(['.pdf', '.pptx']);
+
 function die(msg) {
   console.error(`[ingest] ERROR: ${msg}`);
   process.exit(1);
 }
 if (!GEMINI_API_KEY) die('GEMINI_API_KEY is not set.');
 
-// ---------- Source text loading ----------
-// Prefers OCR output (data/extracted.txt) over direct extraction.
-async function loadSourceText() {
-  const extractedPath = path.join(ROOT, 'data', 'extracted.txt');
-
-  if (fs.existsSync(extractedPath)) {
-    const text = fs.readFileSync(extractedPath, 'utf-8');
-    console.log(
-      `[ingest] Using OCR text from ${extractedPath} (${text.length} chars)`,
-    );
-    return text;
+// ---------- Source file discovery ----------
+function discoverSourceFiles() {
+  if (SOURCE_FILE_OVERRIDE) {
+    const abs = path.isAbsolute(SOURCE_FILE_OVERRIDE)
+      ? SOURCE_FILE_OVERRIDE
+      : path.resolve(ROOT, SOURCE_FILE_OVERRIDE);
+    if (!fs.existsSync(abs)) die(`SOURCE_FILE not found: ${abs}`);
+    return [abs];
   }
 
-  if (!SOURCE_FILE_RAW) {
-    die(
-      'No OCR text file found and SOURCE_FILE is not set. ' +
-        'Either set SOURCE_FILE in .env or run "npm run ocr" first.',
-    );
+  if (!fs.existsSync(SOURCE_DIR)) {
+    die(`source-files/ directory not found at ${SOURCE_DIR}`);
+  }
+  return fs
+    .readdirSync(SOURCE_DIR)
+    .filter((name) => SUPPORTED_EXTS.has(path.extname(name).toLowerCase()))
+    .sort()
+    .map((name) => path.join(SOURCE_DIR, name));
+}
+
+// ---------- Load text for one file (OCR cache or direct extraction) ----------
+async function loadTextForFile(filePath) {
+  const stem = path.basename(filePath, path.extname(filePath));
+  const cachePath = path.join(EXTRACTED_DIR, `${stem}.txt`);
+
+  if (fs.existsSync(cachePath)) {
+    const text = fs.readFileSync(cachePath, 'utf-8');
+    return { text, source: 'ocr-cache' };
   }
 
-  const SOURCE_FILE = path.isAbsolute(SOURCE_FILE_RAW)
-    ? SOURCE_FILE_RAW
-    : path.resolve(ROOT, SOURCE_FILE_RAW);
-
-  if (!fs.existsSync(SOURCE_FILE)) {
-    die(`No OCR text file found and source file not found at: ${SOURCE_FILE}`);
-  }
-
-  const ext = path.extname(SOURCE_FILE).toLowerCase();
-  console.log(`[ingest] Reading source directly: ${SOURCE_FILE} (${ext})`);
-
+  const ext = path.extname(filePath).toLowerCase();
   let text = '';
+
   if (ext === '.pdf') {
-    const dataBuffer = fs.readFileSync(SOURCE_FILE);
-    const pdf = await pdfParse(dataBuffer);
-    console.log(`[ingest] Pages: ${pdf.numpages}, Chars: ${pdf.text.length}`);
+    const buf = fs.readFileSync(filePath);
+    const pdf = await pdfParse(buf);
     text = pdf.text;
   } else if (ext === '.pptx') {
-    text = await parseOffice(SOURCE_FILE);
-    console.log(`[ingest] Chars: ${text.length}`);
+    text = await parseOffice(filePath);
   } else {
-    die(`Unsupported file extension: ${ext}. Supported: .pdf, .pptx`);
+    throw new Error(`Unsupported extension: ${ext}`);
   }
 
   if (!text || text.trim().length < 50) {
-    die(
-      `Very little text extracted from ${SOURCE_FILE}. ` +
-        'The file may be scanned or image-based. ' +
-        'Run "npm run ocr" first to OCR with Gemini, then re-run ingest.',
+    throw new Error(
+      `Direct extraction yielded only ${text.length} chars — file is likely ` +
+        `scanned/image-based. Run "npm run ocr" first to populate ` +
+        `data/extracted/${stem}.txt, then re-run ingest.`,
     );
   }
 
-  return text;
+  return { text, source: 'direct' };
 }
 
 // ---------- Chunking ----------
-// Split by paragraphs, then merge adjacent paragraphs up to targetSize.
-// If a single paragraph is bigger than targetSize, hard-split it with overlap.
 function chunkText(text, targetSize = 800, overlap = 100) {
   const clean = text
     .replace(/\r\n/g, '\n')
@@ -142,10 +142,7 @@ function chunkText(text, targetSize = 800, overlap = 100) {
   return chunks;
 }
 
-// ---------- Embedding (Gemini single embedContent, looped) ----------
-// gemini-embedding-001 does not support synchronous batchEmbedContents,
-// only single embedContent calls. We loop over them sequentially.
-// Fine for a few hundred chunks; slow for thousands.
+// ---------- Embedding (single embedContent, looped) ----------
 async function embedOne(text) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/` +
@@ -193,46 +190,86 @@ async function embedOne(text) {
   throw new Error(`embedOne: exhausted retries. Last error: ${lastErr}`);
 }
 
-async function embedBatch(texts) {
-  const results = [];
-  for (const text of texts) {
-    const vector = await embedOne(text);
-    results.push(vector);
-    // Small delay to avoid rate-limit bursts on the free tier.
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return results;
-}
-
 // ---------- Main ----------
 async function main() {
-  const sourceText = await loadSourceText();
-
-  console.log('[ingest] Chunking...');
-  const chunks = chunkText(sourceText);
-  console.log(`[ingest] Produced ${chunks.length} chunks`);
-
-  console.log('[ingest] Embedding...');
-  const BATCH = 32;
-  const all = [];
-  for (let i = 0; i < chunks.length; i += BATCH) {
-    const batch = chunks.slice(i, i + BATCH);
-    const vectors = await embedBatch(batch);
-    all.push(...vectors);
-    console.log(`[ingest]   ${Math.min(i + BATCH, chunks.length)}/${chunks.length}`);
+  const sourceFiles = discoverSourceFiles();
+  if (sourceFiles.length === 0) {
+    die(
+      'No source files found. Add .pdf or .pptx files to source-files/ ' +
+        'or set SOURCE_FILE in .env.',
+    );
   }
 
-  const knowledge = chunks.map((text, i) => ({
+  console.log(`[ingest] Found ${sourceFiles.length} source file(s)`);
+
+  // Step 1: load text from each file
+  const fileTexts = []; // [{ source: basename, text }]
+  for (const filePath of sourceFiles) {
+    const basename = path.basename(filePath);
+    try {
+      const { text, source } = await loadTextForFile(filePath);
+      console.log(
+        `[ingest] Loaded ${basename}: ${text.length} chars (${source})`,
+      );
+      fileTexts.push({ source: basename, text });
+    } catch (err) {
+      console.error(`[ingest] SKIP ${basename}: ${err.message}`);
+    }
+  }
+
+  if (fileTexts.length === 0) {
+    die('No source texts could be loaded. Aborting.');
+  }
+
+  // Step 2: chunk each file's text and tag with source
+  console.log('');
+  console.log('[ingest] Chunking...');
+  const allChunks = []; // [{ source, text }]
+  for (const { source, text } of fileTexts) {
+    const chunks = chunkText(text);
+    console.log(`[ingest]   ${source}: ${chunks.length} chunks`);
+    for (const chunk of chunks) {
+      allChunks.push({ source, text: chunk });
+    }
+  }
+  console.log(`[ingest] Total: ${allChunks.length} chunks`);
+
+  // Step 3: embed every chunk
+  console.log('');
+  console.log('[ingest] Embedding...');
+  for (let i = 0; i < allChunks.length; i++) {
+    allChunks[i].embedding = await embedOne(allChunks[i].text);
+    if ((i + 1) % 10 === 0 || i === allChunks.length - 1) {
+      console.log(`[ingest]   ${i + 1}/${allChunks.length}`);
+    }
+    if (i < allChunks.length - 1) {
+      // Small delay to avoid rate-limit bursts on the free tier.
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+
+  // Step 4: assemble final structure with stable IDs and save
+  const knowledge = allChunks.map((c, i) => ({
     id: i,
-    text,
-    embedding: all[i],
+    source: c.source,
+    text: c.text,
+    embedding: c.embedding,
   }));
 
-  const outDir = path.join(ROOT, 'data');
-  const outPath = path.join(outDir, 'chunks.json');
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(outPath, JSON.stringify(knowledge));
-  console.log(`[ingest] Saved ${knowledge.length} chunks to ${outPath}`);
+  fs.mkdirSync(path.dirname(CHUNKS_PATH), { recursive: true });
+  fs.writeFileSync(CHUNKS_PATH, JSON.stringify(knowledge));
+  console.log('');
+  console.log(`[ingest] Saved ${knowledge.length} chunks to ${CHUNKS_PATH}`);
+
+  // Per-source breakdown
+  const bySource = {};
+  for (const k of knowledge) {
+    bySource[k.source] = (bySource[k.source] || 0) + 1;
+  }
+  console.log('[ingest] Breakdown by source:');
+  for (const [src, count] of Object.entries(bySource)) {
+    console.log(`[ingest]   ${count} chunks  ${src}`);
+  }
 }
 
 main().catch((err) => {

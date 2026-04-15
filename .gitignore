@@ -1,6 +1,6 @@
 node_modules/
 .env
-data/extracted.txt
+data/extracted/
 *.log
 .DS_Store
 

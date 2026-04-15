@@ -1,9 +1,10 @@
 // src/rag.js
 //
 // Retrieval + generation:
-//   1. embed the user's question with Voyage
+//   1. embed the user's question with Gemini
 //   2. cosine-search top-K chunks from data/chunks.json
 //   3. ask Gemini to answer using only those chunks
+//   4. cite the source document(s) the answer came from
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +15,7 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
-const EMBED_MODEL = process.env.EMBED_MODEL || 'text-embedding-004';
+const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
 const TOP_K = parseInt(process.env.TOP_K || '4', 10);
 
 // ---------- Load knowledge base ----------
@@ -75,6 +76,7 @@ function searchTopK(queryEmbed, k = TOP_K) {
   return knowledge
     .map((chunk) => ({
       id: chunk.id,
+      source: chunk.source || '미상',
       text: chunk.text,
       score: cosineSim(queryEmbed, chunk.embedding),
     }))
@@ -83,13 +85,6 @@ function searchTopK(queryEmbed, k = TOP_K) {
 }
 
 // ---------- Generate answer (Gemini) ----------
-// Important: Gemini 2.5 models use internal "thinking tokens" by
-// default, which count against maxOutputTokens. With a small budget
-// like 800, thinking can consume the entire allowance and leave no
-// tokens for the actual answer — the response then has no text and
-// finishReason: "MAX_TOKENS". For RAG Q&A we don't need thinking,
-// so we disable it via thinkingConfig.thinkingBudget: 0 and give
-// the visible answer plenty of room.
 async function generateWithGemini(systemPrompt, userQuestion) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -119,9 +114,6 @@ async function generateWithGemini(systemPrompt, userQuestion) {
     },
   });
 
-  // Retry on transient errors (503 UNAVAILABLE is common for 2.5
-  // Flash during demand spikes). Short backoffs because Kakao has
-  // a 5s sync timeout — for longer outages, use callback mode.
   const maxAttempts = 3;
   let lastErr = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -135,7 +127,7 @@ async function generateWithGemini(systemPrompt, userQuestion) {
       const errText = await resp.text();
       lastErr = `Gemini ${resp.status}: ${errText.slice(0, 200)}`;
       if (attempt < maxAttempts) {
-        const waitMs = 800 * attempt; // 800ms, 1600ms
+        const waitMs = 800 * attempt;
         console.warn(
           `[rag] ${lastErr.slice(0, 120)} — attempt ${attempt}/${maxAttempts}, waiting ${waitMs}ms`,
         );
@@ -155,13 +147,7 @@ async function generateWithGemini(systemPrompt, userQuestion) {
 
     if (!text) {
       const finishReason = candidate?.finishReason ?? 'unknown';
-      const promptFeedback = data?.promptFeedback
-        ? JSON.stringify(data.promptFeedback)
-        : 'none';
-      throw new Error(
-        `Gemini returned no text (finishReason=${finishReason}, ` +
-          `promptFeedback=${promptFeedback})`,
-      );
+      throw new Error(`Gemini returned no text (finishReason=${finishReason})`);
     }
     return text;
   }
@@ -181,19 +167,27 @@ export async function answerQuestion(question) {
   // 1) Retrieve
   const qEmbed = await embedQuery(question);
   const top = searchTopK(qEmbed);
+
+  // Build the context block, labeling each chunk with its source.
   const context = top
-    .map((c, i) => `[자료 ${i + 1}]\n${c.text}`)
+    .map((c, i) => `[자료 ${i + 1} | 출처: ${c.source}]\n${c.text}`)
     .join('\n\n---\n\n');
 
+  // The unique sources actually retrieved (for the model to cite).
+  const usedSources = [...new Set(top.map((c) => c.source))];
+
   // 2) Generate
-  const systemPrompt = `당신은 "오리엔테이션 사업자내기" 자료를 기반으로 답변하는 친절한 안내 챗봇입니다.
+  const systemPrompt = `당신은 사업자등록 및 운영 안내 챗봇입니다. 여러 안내 자료를 기반으로 사용자의 질문에 답변합니다.
 
 규칙:
-1. 반드시 아래 [참고 자료]에 있는 내용만 근거로 답변하세요.
-2. 자료에 없는 내용은 추측하지 말고 "해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요."라고 답하세요.
-3. 답변은 간결하게, 최대 500자 내외로 작성하세요.
-4. 여러 항목이 있으면 번호 목록으로 정리하세요.
+1. 반드시 아래 [참고 자료]에 있는 내용만 근거로 답변하세요. 자료에 없는 내용은 절대 추측하거나 일반 상식으로 보충하지 마세요.
+2. 자료에 답이 없으면 "해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요."라고 답하세요.
+3. 답변은 친절하고 간결하게, 본문은 600자 내외로 작성하세요. 여러 항목은 번호 목록으로 정리하세요.
+4. 답변 본문 다음에 빈 줄을 하나 두고, 마지막 줄에 "📚 출처: <파일명>" 형식으로 실제로 참고한 자료의 파일명을 명시하세요. 여러 자료를 참고했다면 쉼표로 구분하세요. 자료에 답이 없어 모른다고 답한 경우에는 출처 줄을 생략하세요.
 5. 한국어로 답변하세요.
+
+이번 질의에서 검색된 자료의 출처 후보:
+${usedSources.map((s) => `- ${s}`).join('\n')}
 
 [참고 자료]
 ${context}`;
