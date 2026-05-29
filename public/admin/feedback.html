@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>사용자 피드백 · 카카오봇 관리자</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>body { font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif; }</style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+
+  <div class="flex min-h-screen">
+
+    <aside class="w-64 bg-white border-r border-slate-200 flex flex-col hidden md:flex">
+      <div class="p-6 border-b border-slate-100">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center">
+            <i data-lucide="message-circle" class="w-5 h-5 text-white"></i>
+          </div>
+          <div>
+            <div class="font-semibold text-slate-900 text-sm">카카오봇</div>
+            <div class="text-xs text-slate-500">관리자</div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="flex-1 p-4 space-y-1">
+        <a href="index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 hover:bg-slate-50 text-sm">
+          <i data-lucide="folder" class="w-4 h-4"></i>
+          자료 관리
+        </a>
+        <a href="test.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 hover:bg-slate-50 text-sm">
+          <i data-lucide="message-square-text" class="w-4 h-4"></i>
+          답변 테스트
+        </a>
+        <a href="stats.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 hover:bg-slate-50 text-sm">
+          <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
+          통계
+        </a>
+        <a href="feedback.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-blue-50 text-blue-700 font-medium text-sm">
+          <i data-lucide="thumbs-up" class="w-4 h-4"></i>
+          사용자 피드백
+        </a>
+      </nav>
+
+      <div class="p-4 border-t border-slate-100">
+        <div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 cursor-pointer">
+          <div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-medium text-slate-700">운</div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium text-slate-900 truncate">운영자</div>
+            <div class="text-xs text-slate-500 truncate">admin@example.com</div>
+          </div>
+          <i data-lucide="log-out" class="w-4 h-4 text-slate-400"></i>
+        </div>
+      </div>
+    </aside>
+
+    <main class="flex-1 overflow-hidden">
+      <header class="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-10">
+        <h1 class="text-xl font-bold text-slate-900">사용자 피드백</h1>
+        <p class="text-xs text-slate-500 mt-0.5">사용자가 👎 표시한 답변을 검토하고 자료를 개선합니다</p>
+      </header>
+
+      <div class="p-6 max-w-5xl mx-auto space-y-6">
+
+        <!-- Filter tabs -->
+        <div class="flex items-center gap-2 border-b border-slate-200 pb-3">
+          <button class="px-4 py-2 text-sm font-medium text-slate-900 border-b-2 border-blue-500 -mb-3">
+            개선 필요 <span class="ml-1 px-1.5 py-0.5 bg-red-100 text-red-700 rounded-full text-xs">12</span>
+          </button>
+          <button class="px-4 py-2 text-sm text-slate-500 hover:text-slate-900">
+            만족 <span class="ml-1 text-xs text-slate-400">204</span>
+          </button>
+          <button class="px-4 py-2 text-sm text-slate-500 hover:text-slate-900">
+            처리됨 <span class="ml-1 text-xs text-slate-400">38</span>
+          </button>
+        </div>
+
+        <!-- Feedback list -->
+        <div class="space-y-4">
+
+          <!-- Item 1: needs improvement -->
+          <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="inline-flex items-center gap-1.5 text-xs px-2 py-1 bg-red-50 text-red-700 rounded-full">
+                    <i data-lucide="thumbs-down" class="w-3 h-3"></i>
+                    개선 필요
+                  </span>
+                  <span class="text-xs text-slate-500">2시간 전</span>
+                </div>
+                <button class="text-xs text-slate-400 hover:text-slate-600">
+                  <i data-lucide="more-horizontal" class="w-4 h-4"></i>
+                </button>
+              </div>
+
+              <div class="space-y-3">
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">질문</div>
+                  <div class="text-sm text-slate-900">카페24 입점 절차 알려주세요</div>
+                </div>
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">챗봇 답변</div>
+                  <div class="text-sm text-slate-700 bg-slate-50 rounded-lg p-3 leading-relaxed">
+                    해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
+                <div class="text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                  <i data-lucide="lightbulb" class="w-3.5 h-3.5"></i>
+                  카페24 가입안내서가 없어 답변을 못 했습니다
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="text-xs text-slate-600 hover:text-slate-900 px-3 py-1.5 hover:bg-slate-100 rounded-lg">무시</button>
+                  <button class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                    <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                    자료 추가하기
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Item 2: wrong answer -->
+          <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="inline-flex items-center gap-1.5 text-xs px-2 py-1 bg-red-50 text-red-700 rounded-full">
+                    <i data-lucide="thumbs-down" class="w-3 h-3"></i>
+                    개선 필요
+                  </span>
+                  <span class="text-xs text-slate-500">5시간 전</span>
+                </div>
+              </div>
+
+              <div class="space-y-3">
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">질문</div>
+                  <div class="text-sm text-slate-900">스마트스토어 수수료 얼마인가요?</div>
+                </div>
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">챗봇 답변</div>
+                  <div class="text-sm text-slate-700 bg-slate-50 rounded-lg p-3 leading-relaxed">
+                    스마트스토어 가입은 무료이며, 별도의 입점 수수료는 없습니다.
+
+                    📚 출처: 스마트스토어 가입안내서.pdf
+                  </div>
+                </div>
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">사용자 코멘트</div>
+                  <div class="text-sm text-slate-700 italic">"가입 수수료가 아니라 판매 수수료 물어본 건데요..."</div>
+                </div>
+              </div>
+
+              <div class="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
+                <div class="text-xs text-slate-500">
+                  참고 자료: <span class="text-slate-700">스마트스토어 가입안내서.pdf</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="text-xs text-slate-600 hover:text-slate-900 px-3 py-1.5 hover:bg-slate-100 rounded-lg">자세히</button>
+                  <button class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                    <i data-lucide="check" class="w-3.5 h-3.5"></i>
+                    처리 완료
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Item 3: outdated -->
+          <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="inline-flex items-center gap-1.5 text-xs px-2 py-1 bg-red-50 text-red-700 rounded-full">
+                    <i data-lucide="thumbs-down" class="w-3 h-3"></i>
+                    개선 필요
+                  </span>
+                  <span class="text-xs text-slate-500">1일 전</span>
+                </div>
+              </div>
+
+              <div class="space-y-3">
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">질문</div>
+                  <div class="text-sm text-slate-900">11번가 신규가입 혜택 뭐 있어요?</div>
+                </div>
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">챗봇 답변</div>
+                  <div class="text-sm text-slate-700 bg-slate-50 rounded-lg p-3 leading-relaxed line-clamp-3">
+                    신규가입 시 첫 달 광고비 50% 할인 혜택이 제공됩니다. 가입 후 30일 이내 첫 상품 등록 시...
+
+                    📚 출처: 11번가 가입안내서.pdf
+                  </div>
+                </div>
+                <div>
+                  <div class="text-xs text-slate-500 mb-1">사용자 코멘트</div>
+                  <div class="text-sm text-slate-700 italic">"이제 그런 혜택 없는데요? 작년 정보 아닌가요?"</div>
+                </div>
+              </div>
+
+              <div class="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
+                <div class="text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                  <i data-lucide="clock" class="w-3.5 h-3.5"></i>
+                  업로드 6개월 경과 — 최신 자료 확인 권장
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="text-xs text-slate-600 hover:text-slate-900 px-3 py-1.5 hover:bg-slate-100 rounded-lg">무시</button>
+                  <button class="text-xs bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                    자료 교체
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="text-center text-xs text-slate-400 py-4">
+          12개 중 3개 표시 · <a href="#" class="text-blue-600 hover:underline">더 보기</a>
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <script>lucide.createIcons();</script>
+</body>
+</html>
