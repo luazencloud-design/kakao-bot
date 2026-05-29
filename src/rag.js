@@ -1,53 +1,48 @@
 // src/rag.js
 //
-// Retrieval + generation:
+// Retrieval + generation (Supabase pgvector 버전):
 //   1. embed the user's question with Gemini
-//   2. cosine-search top-K chunks from data/chunks.json
+//   2. hybrid_search RPC로 Supabase에서 top-K 청크 조회 (dense + sparse RRF)
 //   3. ask Gemini to answer using only those chunks
 //   4. cite the source document(s) the answer came from
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ROOT = path.resolve(__dirname, '..');
+import { createClient } from '@supabase/supabase-js';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
 const TOP_K = parseInt(process.env.TOP_K || '4', 10);
 
-// ---------- Load knowledge base ----------
-const CHUNKS_PATH = path.join(ROOT, 'data', 'chunks.json');
-let knowledge = [];
-try {
-  knowledge = JSON.parse(fs.readFileSync(CHUNKS_PATH, 'utf-8'));
-  console.log(`[rag] Loaded ${knowledge.length} chunks from knowledge base`);
-} catch (err) {
+// ---------- Supabase 클라이언트 ----------
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.warn(
-    `[rag] WARNING: no knowledge base found at ${CHUNKS_PATH}. ` +
-      `Run "npm run ingest" before starting the server.`,
+    `[rag] WARNING: SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY 누락. ` +
+      `Supabase 검색이 동작하지 않습니다. .env 확인 후 서버 재시작 필요.`,
   );
 }
 
-// ---------- Cosine similarity ----------
-function cosineSim(a, b) {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+const supabase = createClient(SUPABASE_URL ?? '', SUPABASE_SERVICE_ROLE_KEY ?? '', {
+  auth: { persistSession: false },
+});
+
+// ---------- 청크 개수 확인 (옵션, 시작 시 1회) ----------
+(async () => {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+  try {
+    const { count, error } = await supabase
+      .from('chunks')
+      .select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    console.log(`[rag] Supabase 연결 OK. 청크 ${count}개 사용 가능.`);
+  } catch (err) {
+    console.warn(`[rag] Supabase 청크 카운트 조회 실패: ${err.message}`);
   }
-  const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom === 0 ? 0 : dot / denom;
-}
+})();
 
 // ---------- Embed a query (Gemini) ----------
-// Must use the SAME outputDimensionality as ingest.js or the vectors
-// will be different sizes and cosine similarity breaks.
+// outputDimensionality는 chunks 테이블의 vector(768)와 일치해야 함.
 async function embedQuery(text) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/` +
@@ -71,17 +66,27 @@ async function embedQuery(text) {
   return data.embedding.values;
 }
 
-// ---------- Top-K search ----------
-function searchTopK(queryEmbed, k = TOP_K) {
-  return knowledge
-    .map((chunk) => ({
-      id: chunk.id,
-      source: chunk.source || '미상',
-      text: chunk.text,
-      score: cosineSim(queryEmbed, chunk.embedding),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
+// ---------- Top-K 하이브리드 검색 (Supabase RPC) ----------
+// dense (pgvector cosine) + sparse (tsvector) → RRF 융합 → top-K
+async function searchTopK(queryEmbed, queryText, k = TOP_K) {
+  const { data, error } = await supabase.rpc('hybrid_search', {
+    query_embedding: queryEmbed,
+    query_text: queryText,
+    match_count: k,
+  });
+  if (error) {
+    throw new Error(`Supabase hybrid_search 실패: ${error.message}`);
+  }
+  // 반환 컬럼: id, document_id, chunk_text, metadata, source, rrf_score
+  // 기존 인터페이스와 맞추기 위해 text·score로 매핑
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    document_id: row.document_id,
+    source: row.source ?? '미상',
+    text: row.chunk_text,
+    metadata: row.metadata ?? {},
+    score: row.rrf_score,
+  }));
 }
 
 // ---------- Generate answer (Gemini) ----------
@@ -160,13 +165,14 @@ export async function answerQuestion(question) {
   if (!question || question.trim().length === 0) {
     return '질문을 입력해 주세요.';
   }
-  if (knowledge.length === 0) {
-    return '지식 베이스가 비어 있습니다. 관리자가 "npm run ingest"를 먼저 실행해야 합니다.';
-  }
 
-  // 1) Retrieve
+  // 1) Retrieve (Gemini 임베딩 + Supabase 하이브리드 검색)
   const qEmbed = await embedQuery(question);
-  const top = searchTopK(qEmbed);
+  const top = await searchTopK(qEmbed, question);
+
+  if (top.length === 0) {
+    return '해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.';
+  }
 
   // Build the context block, labeling each chunk with its source.
   const context = top
