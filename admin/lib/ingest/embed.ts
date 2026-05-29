@@ -1,0 +1,52 @@
+// Gemini 임베딩. 청크 텍스트 → 768차원 벡터. 재시도 포함.
+
+const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
+
+export async function embedDocument(text: string): Promise<number[]> {
+  return embed(text, 'RETRIEVAL_DOCUMENT');
+}
+
+export async function embedQuery(text: string): Promise<number[]> {
+  return embed(text, 'RETRIEVAL_QUERY');
+}
+
+async function embed(text: string, taskType: string): Promise<number[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY 누락');
+
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${EMBED_MODEL}:embedContent?key=${apiKey}`;
+
+  const body = JSON.stringify({
+    model: `models/${EMBED_MODEL}`,
+    content: { parts: [{ text }] },
+    taskType,
+    outputDimensionality: 768,
+  });
+
+  const maxAttempts = 5;
+  let lastErr = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+
+    if ([429, 500, 502, 503, 504].includes(resp.status)) {
+      lastErr = `Gemini embedding ${resp.status}`;
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+        continue;
+      }
+      throw new Error(`${lastErr} (${maxAttempts}회 재시도 실패)`);
+    }
+    if (!resp.ok) {
+      throw new Error(`Gemini embedding API ${resp.status}: ${await resp.text()}`);
+    }
+    const data = await resp.json();
+    return data.embedding.values;
+  }
+  throw new Error(`embed: 재시도 소진. ${lastErr}`);
+}
