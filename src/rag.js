@@ -12,34 +12,24 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
 const TOP_K = parseInt(process.env.TOP_K || '4', 10);
 
-// ---------- Supabase 클라이언트 ----------
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn(
-    `[rag] WARNING: SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY 누락. ` +
-      `Supabase 검색이 동작하지 않습니다. .env 확인 후 서버 재시작 필요.`,
-  );
-}
-
-const supabase = createClient(SUPABASE_URL ?? '', SUPABASE_SERVICE_ROLE_KEY ?? '', {
-  auth: { persistSession: false },
-});
-
-// ---------- 청크 개수 확인 (옵션, 시작 시 1회) ----------
-(async () => {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
-  try {
-    const { count, error } = await supabase
-      .from('chunks')
-      .select('id', { count: 'exact', head: true });
-    if (error) throw error;
-    console.log(`[rag] Supabase 연결 OK. 청크 ${count}개 사용 가능.`);
-  } catch (err) {
-    console.warn(`[rag] Supabase 청크 카운트 조회 실패: ${err.message}`);
+// ---------- Supabase 클라이언트 (lazy) ----------
+// 모듈 로드 시점에 createClient를 호출하면, 환경변수가 없을 때
+// "supabaseUrl is required"로 throw되어 서버리스 함수 전체가 크래시함.
+// 그래서 첫 사용 시점에 lazy 생성하고, 누락 시 graceful 에러를 던진다.
+let _supabase = null;
+function getSupabase() {
+  if (_supabase) return _supabase;
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      'SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY가 설정되지 않았습니다. ' +
+        'Vercel 환경변수를 확인하세요.',
+    );
   }
-})();
+  _supabase = createClient(url, key, { auth: { persistSession: false } });
+  return _supabase;
+}
 
 // ---------- Embed a query (Gemini) ----------
 // outputDimensionality는 chunks 테이블의 vector(768)와 일치해야 함.
@@ -69,7 +59,7 @@ async function embedQuery(text) {
 // ---------- Top-K 하이브리드 검색 (Supabase RPC) ----------
 // dense (pgvector cosine) + sparse (tsvector) → RRF 융합 → top-K
 async function searchTopK(queryEmbed, queryText, k = TOP_K) {
-  const { data, error } = await supabase.rpc('hybrid_search', {
+  const { data, error } = await getSupabase().rpc('hybrid_search', {
     query_embedding: queryEmbed,
     query_text: queryText,
     match_count: k,
