@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth-guard';
 import { ragQuery } from '@/lib/rag/query';
+import { logQuery } from '@/lib/rag/log';
 
 export const maxDuration = 60;
 
@@ -20,7 +21,13 @@ export async function POST(request: NextRequest) {
 
   try {
     const result = await ragQuery(question.trim());
-    return NextResponse.json({ ok: true, ...result });
+    // 어드민 테스트는 user_id='admin-test'로 기록 (통계에서 구분 가능)
+    const queryId = await logQuery({
+      userId: 'admin-test',
+      utterance: question.trim(),
+      result,
+    });
+    return NextResponse.json({ ok: true, queryId, ...result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
