@@ -4,7 +4,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { extractText } from './extract';
 import { chunkText } from './chunk';
-import { embedDocument } from './embed';
+import { embedDocumentsBatch } from './embed';
 
 const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
 
@@ -89,25 +89,30 @@ export async function processDocument(
     // 3. 기존 청크 삭제 (재처리 대비)
     await admin.from('chunks').delete().eq('document_id', documentId);
 
-    // 4. 임베딩 + 삽입 (순차, rate-limit 회피)
-    const rows = [];
-    for (let i = 0; i < chunks.length; i++) {
-      emit({ stage: 'embed', current: i + 1, total: chunks.length });
-      const embedding = await embedDocument(chunks[i]);
-      rows.push({
-        document_id: documentId,
-        chunk_index: i,
-        text: chunks[i],
-        embedding,
-        embed_model: EMBED_MODEL,
-        embed_dim: 768,
-        metadata: {},
-      });
-      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 120));
+    // 4. 배치 임베딩 (100개씩, 진행 이벤트는 배치 단위)
+    const BATCH = 100;
+    const embeddings: number[][] = [];
+    for (let start = 0; start < chunks.length; start += BATCH) {
+      const slice = chunks.slice(start, start + BATCH);
+      emit({ stage: 'embed', current: Math.min(start + slice.length, chunks.length), total: chunks.length });
+      const vecs = await embedDocumentsBatch(slice);
+      embeddings.push(...vecs);
+    }
+    if (embeddings.length !== chunks.length) {
+      throw new Error(`임베딩 개수 불일치 (${embeddings.length}/${chunks.length})`);
     }
 
+    const rows = chunks.map((text, i) => ({
+      document_id: documentId,
+      chunk_index: i,
+      text,
+      embedding: embeddings[i],
+      embed_model: EMBED_MODEL,
+      embed_dim: 768,
+      metadata: {},
+    }));
+
     emit({ stage: 'save' });
-    const BATCH = 100;
     for (let i = 0; i < rows.length; i += BATCH) {
       const { error } = await admin.from('chunks').insert(rows.slice(i, i + BATCH));
       if (error) throw new Error(`청크 저장 실패: ${error.message}`);
