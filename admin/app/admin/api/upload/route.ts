@@ -106,13 +106,35 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 3. 처리 (동기)
-  try {
-    const { chunkCount } = await processDocument(doc.id, { buffer, filename });
-    return NextResponse.json({ ok: true, id: doc.id, chunkCount });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // 문서는 failed 상태로 남김 (운영자가 재시도 가능)
-    return NextResponse.json({ ok: false, id: doc.id, error: message }, { status: 422 });
-  }
+  // 3. 처리 — NDJSON 스트리밍 (단계별 진행 이벤트를 클라이언트로 푸시)
+  const docId = doc.id;
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (obj: unknown) =>
+        controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
+
+      send({ stage: 'stored' }); // Storage 업로드·문서 생성 완료
+      try {
+        const { chunkCount } = await processDocument(docId, {
+          buffer,
+          filename,
+          onProgress: (e) => send(e),
+        });
+        send({ stage: 'complete', ok: true, id: docId, chunkCount });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        send({ stage: 'complete', ok: false, id: docId, error: message });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  });
 }

@@ -25,12 +25,21 @@ export function inferCategory(filename: string): string {
   return '기타';
 }
 
+export type ProgressEvent =
+  | { stage: 'extract' }
+  | { stage: 'chunk'; total: number }
+  | { stage: 'embed'; current: number; total: number }
+  | { stage: 'save' }
+  | { stage: 'done'; chunkCount: number };
+
 // documentId가 가리키는 문서를 처리. buffer가 주어지면 추출부터, 없으면 캐시된 extracted_text 사용.
+// onProgress: 단계별 진행 상황 콜백 (스트리밍 UI용).
 export async function processDocument(
   documentId: string,
-  opts?: { buffer?: Buffer; filename?: string },
+  opts?: { buffer?: Buffer; filename?: string; onProgress?: (e: ProgressEvent) => void },
 ): Promise<{ chunkCount: number }> {
   const admin = createServiceClient();
+  const emit = opts?.onProgress ?? (() => {});
 
   // 문서 조회
   const { data: doc, error: docErr } = await admin
@@ -47,6 +56,7 @@ export async function processDocument(
 
   try {
     // 1. 텍스트 확보
+    emit({ stage: 'extract' });
     let text = doc.extracted_text ?? '';
     if (opts?.buffer) {
       const { text: extracted } = await extractText(
@@ -74,6 +84,7 @@ export async function processDocument(
     // 2. 청킹
     const chunks = chunkText(text);
     if (chunks.length === 0) throw new Error('청크를 생성하지 못했습니다 (빈 텍스트).');
+    emit({ stage: 'chunk', total: chunks.length });
 
     // 3. 기존 청크 삭제 (재처리 대비)
     await admin.from('chunks').delete().eq('document_id', documentId);
@@ -81,6 +92,7 @@ export async function processDocument(
     // 4. 임베딩 + 삽입 (순차, rate-limit 회피)
     const rows = [];
     for (let i = 0; i < chunks.length; i++) {
+      emit({ stage: 'embed', current: i + 1, total: chunks.length });
       const embedding = await embedDocument(chunks[i]);
       rows.push({
         document_id: documentId,
@@ -94,6 +106,7 @@ export async function processDocument(
       if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 120));
     }
 
+    emit({ stage: 'save' });
     const BATCH = 100;
     for (let i = 0; i < rows.length; i += BATCH) {
       const { error } = await admin.from('chunks').insert(rows.slice(i, i + BATCH));
@@ -106,6 +119,7 @@ export async function processDocument(
       .update({ status: 'ready', chunk_count: chunks.length, error_message: null })
       .eq('id', documentId);
 
+    emit({ stage: 'done', chunkCount: chunks.length });
     return { chunkCount: chunks.length };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
