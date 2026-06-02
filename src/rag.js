@@ -160,19 +160,102 @@ async function generateWithGemini(systemPrompt, userQuestion) {
   throw new Error(`generateWithGemini: exhausted retries. Last error: ${lastErr}`);
 }
 
+// ---------- Query rewriting (Gemini, graceful fallback) ----------
+async function rewriteQuery(question) {
+  try {
+    const prompt = `다음은 사업자등록·오픈마켓 가입·강의 안내 챗봇에 들어온 사용자 질문입니다.
+이 질문을 문서 검색에 적합하도록 핵심 키워드 중심으로 한 줄로 재작성하세요.
+동의어나 정식 명칭이 있으면 함께 포함하세요. 설명 없이 재작성된 검색어만 출력하세요.
+
+사용자 질문: ${question}
+
+검색어:`;
+    const result = (await generateRaw(prompt, 100)).trim().replace(/^검색어:\s*/, '');
+    return result && result.length > 1 ? `${question} ${result}` : question;
+  } catch {
+    return question;
+  }
+}
+
+// ---------- LLM rerank (top-N 후보 → top-K) ----------
+async function rerank(question, candidates, topK) {
+  if (candidates.length <= topK) return candidates;
+  try {
+    const list = candidates
+      .map((c, i) => `[${i}] (출처: ${c.source})\n${c.text.slice(0, 300)}`)
+      .join('\n\n');
+    const prompt = `질문에 답하는 데 가장 유용한 자료를 순서대로 고르세요.
+질문: ${question}
+
+자료 목록:
+${list}
+
+가장 관련 높은 자료 ${topK}개의 번호만 쉼표로 구분해 순서대로 출력하세요 (예: 2,0,5,1). 설명 없이 번호만.`;
+    const result = await generateRaw(prompt, 50);
+    const indices = (result.match(/\d+/g) || [])
+      .map(Number)
+      .filter((n) => n >= 0 && n < candidates.length);
+    if (indices.length === 0) return candidates.slice(0, topK);
+    const seen = new Set();
+    const ordered = [];
+    for (const idx of indices) {
+      if (!seen.has(idx)) {
+        seen.add(idx);
+        ordered.push(candidates[idx]);
+      }
+      if (ordered.length >= topK) break;
+    }
+    for (const c of candidates) {
+      if (ordered.length >= topK) break;
+      if (!ordered.includes(c)) ordered.push(c);
+    }
+    return ordered;
+  } catch {
+    return candidates.slice(0, topK);
+  }
+}
+
+// 시스템 프롬프트 없이 단순 생성 (재작성·재정렬용)
+async function generateRaw(prompt, maxTokens) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    }),
+  });
+  if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
+  const data = await resp.json();
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+}
+
 // ---------- Main entry ----------
+const RETRIEVE_K = 12;
+
 export async function answerQuestion(question) {
   if (!question || question.trim().length === 0) {
     return '질문을 입력해 주세요.';
   }
 
-  // 1) Retrieve (Gemini 임베딩 + Supabase 하이브리드 검색)
-  const qEmbed = await embedQuery(question);
-  const top = await searchTopK(qEmbed, question);
+  // 1) 쿼리 재작성 → 임베딩 → 하이브리드 검색 (넉넉히) → LLM 재정렬
+  const searchQuery = await rewriteQuery(question);
+  const qEmbed = await embedQuery(searchQuery);
+  const candidates = await searchTopK(qEmbed, searchQuery, RETRIEVE_K);
 
-  if (top.length === 0) {
+  if (candidates.length === 0) {
     return '해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.';
   }
+
+  const top = await rerank(question, candidates, TOP_K);
 
   // Build the context block, labeling each chunk with its source.
   const context = top
