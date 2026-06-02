@@ -5,8 +5,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 30,
-      "includeFiles": "data/chunks.json"
+      "maxDuration": 30
     }
   }
 }

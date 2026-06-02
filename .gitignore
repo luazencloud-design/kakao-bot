@@ -1,6 +1,7 @@
 node_modules/
 .env
 data/extracted/
+data/chunks.json
 *.log
 .DS_Store
 

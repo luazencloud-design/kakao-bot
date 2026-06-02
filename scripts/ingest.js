@@ -27,6 +27,8 @@ import 'dotenv/config';
 
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import { parseOffice } from 'officeparser';
+import crypto from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
 
 import { extractHwpText } from './lib/hwp-extract.js';
 import { extractVttText } from './lib/vtt-extract.js';
@@ -294,28 +296,138 @@ async function main() {
     }
   }
 
-  // Step 4: assemble final structure with stable IDs and save
-  const knowledge = allChunks.map((c, i) => ({
-    id: i,
-    source: c.source,
-    text: c.text,
-    embedding: c.embedding,
-  }));
-
-  fs.mkdirSync(path.dirname(CHUNKS_PATH), { recursive: true });
-  fs.writeFileSync(CHUNKS_PATH, JSON.stringify(knowledge));
+  // Step 4: Supabase에 upsert (이전 chunks.json 방식 폐기)
   console.log('');
-  console.log(`[ingest] Saved ${knowledge.length} chunks to ${CHUNKS_PATH}`);
+  console.log('[ingest] Supabase에 upsert 중...');
 
-  // Per-source breakdown
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    die('SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY 누락. .env 확인 필요.');
+  }
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+
+  // source별로 그룹화
   const bySource = {};
-  for (const k of knowledge) {
-    bySource[k.source] = (bySource[k.source] || 0) + 1;
+  for (const c of allChunks) {
+    if (!bySource[c.source]) bySource[c.source] = [];
+    bySource[c.source].push(c);
   }
-  console.log('[ingest] Breakdown by source:');
-  for (const [src, count] of Object.entries(bySource)) {
-    console.log(`[ingest]   ${count} chunks  ${src}`);
+
+  let totalUpserted = 0;
+
+  for (const [filename, items] of Object.entries(bySource)) {
+    const ext = path.extname(filename).toLowerCase();
+    const srcPath = sourceFiles.find((p) => path.basename(p) === filename);
+    let size_bytes = null;
+    let sha256 = null;
+    if (srcPath && fs.existsSync(srcPath)) {
+      const buf = fs.readFileSync(srcPath);
+      size_bytes = buf.byteLength;
+      sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    }
+
+    // 기존 document 찾기 (filename 기준) — 있으면 청크만 갱신, 없으면 신규 생성
+    const { data: existing } = await supabase
+      .from('documents')
+      .select('id')
+      .eq('filename', filename)
+      .maybeSingle();
+
+    let docId;
+    if (existing) {
+      docId = existing.id;
+      // 기존 청크 삭제 (CASCADE로 자동, 그래도 명시적으로)
+      await supabase.from('chunks').delete().eq('document_id', docId);
+      await supabase
+        .from('documents')
+        .update({
+          size_bytes,
+          sha256,
+          status: 'ready',
+          chunk_count: items.length,
+          extracted_text: fileTexts.find((f) => f.source === filename)?.text ?? null,
+        })
+        .eq('id', docId);
+      console.log(`[ingest]   ↻ ${filename} (기존 ${items.length}청크 갱신)`);
+    } else {
+      const { data: inserted, error: insErr } = await supabase
+        .from('documents')
+        .insert({
+          filename,
+          mime_type: mimeFromExt(ext),
+          storage_path: `cli-ingest/${filename}`,
+          size_bytes,
+          sha256,
+          category: inferCategory(filename),
+          status: 'ready',
+          chunk_count: items.length,
+          extracted_text: fileTexts.find((f) => f.source === filename)?.text ?? null,
+        })
+        .select('id')
+        .single();
+      if (insErr) {
+        console.error(`[ingest] documents INSERT 실패 (${filename}):`, insErr.message);
+        continue;
+      }
+      docId = inserted.id;
+      console.log(`[ingest]   + ${filename} (신규 ${items.length}청크)`);
+    }
+
+    // 청크 일괄 INSERT
+    const chunkRows = items.map((c, idx) => ({
+      document_id: docId,
+      chunk_index: idx,
+      text: c.text,
+      embedding: c.embedding,
+      embed_model: EMBED_MODEL,
+      embed_dim: 768,
+      metadata: {},
+    }));
+
+    const BATCH = 100;
+    for (let i = 0; i < chunkRows.length; i += BATCH) {
+      const batch = chunkRows.slice(i, i + BATCH);
+      const { error } = await supabase.from('chunks').insert(batch);
+      if (error) {
+        console.error(`[ingest] chunks INSERT 실패:`, error.message);
+        process.exit(1);
+      }
+      totalUpserted += batch.length;
+    }
   }
+
+  console.log('');
+  console.log(`[ingest] ✅ 총 ${totalUpserted}청크 Supabase에 적용 완료`);
+}
+
+// 파일명으로 카테고리 추론 (migrate-to-supabase.mjs와 동일 로직)
+function inferCategory(filename) {
+  if (
+    /(11번가|지마켓|gmarket|스마트스토어|쿠팡|coupang|롯데온|이베이|ebay|큐텐|qoo10|네이버쇼핑|카페24|옥션|auction|위메프|티몬|아마존|amazon|쇼피|shopee|lazada|라자다)/i.test(filename) ||
+    /(가입안내|판매자|입점|셀러|seller|상품등록|계정연동)/i.test(filename)
+  ) return '오픈마켓가입';
+  if (/(사업자|등록증|소명|세무|부가세|홈택스|hometax|세금계산서)/i.test(filename)) return '사업자등록';
+  if (/(노션|notion|niton|웨일|whale|zoom|slack)/i.test(filename)) return '도구가이드';
+  if (
+    /(강의|강좌|주차|수업|orientation|오리엔테이션|매출|수익|recording|transcript)/i.test(filename) ||
+    /\.(vtt|mp4|mp3|m4a)$/i.test(filename)
+  ) return '강의자료';
+  return '기타';
+}
+
+function mimeFromExt(ext) {
+  return {
+    '.pdf': 'application/pdf',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.hwp': 'application/x-hwp',
+    '.txt': 'text/plain',
+    '.vtt': 'text/vtt',
+    '.mp3': 'audio/mpeg',
+    '.mp4': 'video/mp4',
+  }[ext] ?? 'application/octet-stream';
 }
 
 main().catch((err) => {
