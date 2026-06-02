@@ -164,7 +164,9 @@ export function UploadZone() {
           {isDragActive ? '여기에 놓으세요' : '파일을 끌어다 놓거나 클릭해서 선택'}
         </div>
         <div className="text-xs text-slate-400">
-          여러 개 선택 가능 · PDF · TXT · VTT · 최대 50MB
+          여러 개 선택 가능 · PDF · PPTX · HWP · TXT · VTT · MP3 · MP4 · 최대 50MB
+          <br />
+          영상·오디오는 자동 전사되며 시간이 더 걸립니다
         </div>
       </div>
 

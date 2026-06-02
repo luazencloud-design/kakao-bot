@@ -6,9 +6,9 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: import.meta.dirname,
   },
-  // pdf-parse(pdfjs-dist)는 워커 파일을 동적 로드하므로 번들하면 경로가 깨짐.
-  // 번들에서 제외해 node_modules에서 직접 require → 워커 경로 정상 해석.
-  serverExternalPackages: ['pdf-parse'],
+  // 동적 로드·네이티브 의존이 있는 추출 라이브러리는 번들에서 제외해
+  // node_modules에서 직접 require (경로·바이너리 해석 정상화).
+  serverExternalPackages: ['pdf-parse', 'officeparser', 'hwp.js'],
 };
 
 export default nextConfig;
