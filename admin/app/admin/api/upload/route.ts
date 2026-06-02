@@ -65,7 +65,11 @@ export async function POST(request: NextRequest) {
   }
 
   // 1. Storage 업로드
-  const storagePath = `uploads/${crypto.randomUUID()}/${filename}`;
+  // Supabase Storage 키는 ASCII만 허용(한글·공백 불가). 원본 파일명은
+  // documents.filename에 보존하고, storage 키는 UUID + 확장자로 안전하게.
+  const ext = filename.includes('.') ? filename.split('.').pop()!.toLowerCase() : 'bin';
+  const safeExt = ext.replace(/[^a-z0-9]/g, '');
+  const storagePath = `uploads/${crypto.randomUUID()}.${safeExt || 'bin'}`;
   const { error: upErr } = await admin.storage
     .from('source-files')
     .upload(storagePath, buffer, {
