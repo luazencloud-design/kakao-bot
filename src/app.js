@@ -5,6 +5,7 @@
 
 import 'dotenv/config';
 import express from 'express';
+import { waitUntil } from '@vercel/functions';
 import { answerQuestion } from './rag.js';
 import {
   simpleText,
@@ -42,11 +43,10 @@ app.post('/kakao/skill', async (req, res) => {
 
 // ---------- Callback skill (>5s) ----------
 // Requires "useCallback" to be enabled in OpenBuilder bot settings.
-// NOTE: On Vercel serverless, the background task after res.json() is
-// NOT guaranteed to run to completion because the function may be
-// suspended. For reliable callback mode on Vercel, use `waitUntil`
-// from `@vercel/functions`. On a long-running host (local dev,
-// Railway, Render, Fly.io) this endpoint works as-is.
+// Vercel 서버리스에서 res.json() 이후 백그라운드 작업이 suspend되는 문제를
+// `@vercel/functions`의 waitUntil로 해결 — 함수 수명을 백그라운드 작업이
+// 끝날 때까지 연장. 장수명 호스트(로컬·Fly.io)에선 waitUntil이 no-op이거나
+// 예외라도 promise 자체는 그대로 실행되므로 try/catch로 감싼다.
 app.post('/kakao/skill/callback', async (req, res) => {
   const question = extractUtterance(req.body);
   const callbackUrl = extractCallbackUrl(req.body);
@@ -65,7 +65,7 @@ app.post('/kakao/skill/callback', async (req, res) => {
 
   res.json(useCallbackResponse('답변을 생성하고 있습니다... (최대 30초)'));
 
-  (async () => {
+  const bgTask = (async () => {
     try {
       const answer = await answerQuestion(question);
       await fetch(callbackUrl, {
@@ -89,6 +89,13 @@ app.post('/kakao/skill/callback', async (req, res) => {
       }
     }
   })();
+
+  // Vercel: 함수 수명 연장. 비-Vercel 환경: 예외 무시(promise는 그대로 실행).
+  try {
+    waitUntil(bgTask);
+  } catch (_) {
+    /* non-Vercel: long-running process keeps bgTask alive anyway */
+  }
 });
 
 export default app;
