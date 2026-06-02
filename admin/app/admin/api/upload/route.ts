@@ -11,7 +11,10 @@ import { requireAdmin } from '@/lib/auth-guard';
 import { createServiceClient } from '@/lib/supabase/server';
 import { processDocument, inferCategory } from '@/lib/ingest/process';
 
-export const maxDuration = 300; // 5분 (Node 런타임)
+// Vercel: Hobby는 10초로 캡됨(문서는 배치 임베딩으로 보통 통과),
+// Pro는 60초(기본)~300초. 미디어 전사하려면 Pro 필요.
+export const maxDuration = 300;
+export const runtime = 'nodejs';
 
 const MAX_BYTES = 50 * 1024 * 1024; // 50MB (Supabase Storage 무료 한도)
 
