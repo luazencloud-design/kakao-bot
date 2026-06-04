@@ -1,0 +1,28 @@
+# 봇 콜드스타트 방지: 봇 헬스체크 엔드포인트를 주기적으로 핑해서
+# Vercel 서버리스 함수를 웜 상태로 유지한다.
+#
+# 설정: 레포 → Settings → Secrets and variables → Actions → Variables
+#       BOT_PING_URL = 봇 production 도메인 (예: https://xxx.vercel.app)
+#       (카카오 오픈빌더 스킬 URL에서 /kakao/skill 앞부분)
+
+name: keep-warm
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # 5분마다 (GitHub Actions 최소 간격 수준)
+  workflow_dispatch: {} # 수동 실행 버튼
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping bot health endpoint
+        run: |
+          URL="${{ vars.BOT_PING_URL }}"
+          if [ -z "$URL" ]; then
+            echo "BOT_PING_URL 변수가 설정되지 않았습니다. 레포 Settings → Variables에서 추가하세요."
+            exit 0
+          fi
+          echo "Pinging $URL ..."
+          code=$(curl -s -m 20 -o /dev/null -w "%{http_code}" "$URL/")
+          echo "HTTP $code"

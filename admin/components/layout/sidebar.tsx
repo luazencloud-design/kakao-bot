@@ -8,6 +8,7 @@ import {
   LogOut,
   MessageCircle,
   MessageSquareText,
+  Settings,
   ThumbsUp,
 } from 'lucide-react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
@@ -21,6 +22,7 @@ const NAV = [
   { href: '/test', label: '답변 테스트', icon: MessageSquareText },
   { href: '/stats', label: '통계', icon: BarChart3 },
   { href: '/feedback', label: '사용자 피드백', icon: ThumbsUp },
+  { href: '/settings', label: '설정', icon: Settings },
 ];
 
 export function Sidebar({ email }: Props) {
