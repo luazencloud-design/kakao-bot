@@ -42,6 +42,7 @@ export async function proxy(request: NextRequest) {
     path.startsWith('/test') ||
     path.startsWith('/stats') ||
     path.startsWith('/feedback') ||
+    path.startsWith('/settings') ||
     path.startsWith('/admin/api');
 
   if (isProtected && !user) {
