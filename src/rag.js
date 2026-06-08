@@ -228,13 +228,37 @@ async function generateRaw(prompt, maxTokens) {
   return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 }
 
+// ---------- 질의 로깅 (queries 테이블, fire-and-forget) ----------
+function logQuery({ userId, utterance, rewritten, chunks, answer, latencyMs }) {
+  try {
+    const isUnanswered = answer.includes('제공된 자료에 포함되어 있지 않');
+    getSupabase()
+      .from('queries')
+      .insert({
+        user_id: userId ?? null,
+        utterance,
+        rewritten_query: rewritten,
+        retrieved_chunk_ids: (chunks ?? []).map((c) => c.id),
+        answer,
+        sources: isUnanswered ? [] : [...new Set((chunks ?? []).map((c) => c.source))],
+        latency_ms: latencyMs,
+        llm_provider: 'gemini',
+      })
+      .then(() => {}, () => {}); // 실패해도 응답에 영향 없게 swallow
+  } catch (_) {
+    /* env 누락 등 — swallow */
+  }
+}
+
 // ---------- Main entry ----------
 const RETRIEVE_K = 12;
 
-export async function answerQuestion(question) {
+export async function answerQuestion(question, opts = {}) {
   if (!question || question.trim().length === 0) {
     return '질문을 입력해 주세요.';
   }
+  const userId = opts.userId ?? null;
+  const t0 = Date.now();
 
   // 1) 쿼리 재작성 → 임베딩 → 하이브리드 검색 (넉넉히) → LLM 재정렬
   const searchQuery = await rewriteQuery(question);
@@ -242,7 +266,9 @@ export async function answerQuestion(question) {
   const candidates = await searchTopK(qEmbed, searchQuery, RETRIEVE_K);
 
   if (candidates.length === 0) {
-    return '해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.';
+    const answer = '해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.';
+    logQuery({ userId, utterance: question, rewritten: searchQuery, chunks: [], answer, latencyMs: Date.now() - t0 });
+    return answer;
   }
 
   const top = await rerank(question, candidates, TOP_K);
@@ -272,5 +298,7 @@ ${usedSources.map((s) => `- ${s}`).join('\n')}
 ${context}`;
 
   const text = await generateWithGemini(systemPrompt, question);
-  return text.trim() || '답변을 생성하지 못했습니다. 다시 시도해 주세요.';
+  const answer = text.trim() || '답변을 생성하지 못했습니다. 다시 시도해 주세요.';
+  logQuery({ userId, utterance: question, rewritten: searchQuery, chunks: top, answer, latencyMs: Date.now() - t0 });
+  return answer;
 }

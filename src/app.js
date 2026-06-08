@@ -12,6 +12,7 @@ import {
   useCallbackResponse,
   extractUtterance,
   extractCallbackUrl,
+  extractUserId,
 } from './kakao.js';
 
 const app = express();
@@ -25,10 +26,11 @@ app.get('/', (_req, res) => {
 // ---------- Synchronous skill (<5s) ----------
 app.post('/kakao/skill', async (req, res) => {
   const question = extractUtterance(req.body);
+  const userId = extractUserId(req.body);
   console.log(`[sync] Q: ${question}`);
 
   try {
-    const answer = await answerQuestion(question);
+    const answer = await answerQuestion(question, { userId });
     console.log(`[sync] A: ${answer.slice(0, 80)}...`);
     res.json(simpleText(answer));
   } catch (err) {
@@ -50,12 +52,13 @@ app.post('/kakao/skill', async (req, res) => {
 app.post('/kakao/skill/callback', async (req, res) => {
   const question = extractUtterance(req.body);
   const callbackUrl = extractCallbackUrl(req.body);
+  const userId = extractUserId(req.body);
   console.log(`[callback] Q: ${question}`);
   console.log(`[callback] callbackUrl: ${callbackUrl ? 'yes' : 'no'}`);
 
   if (!callbackUrl) {
     try {
-      const answer = await answerQuestion(question);
+      const answer = await answerQuestion(question, { userId });
       return res.json(simpleText(answer));
     } catch (err) {
       console.error('[callback] sync-fallback error:', err);
@@ -67,7 +70,7 @@ app.post('/kakao/skill/callback', async (req, res) => {
 
   const bgTask = (async () => {
     try {
-      const answer = await answerQuestion(question);
+      const answer = await answerQuestion(question, { userId });
       await fetch(callbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
