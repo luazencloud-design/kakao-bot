@@ -12,6 +12,7 @@ import {
   MoreVertical,
   Trash2,
   RefreshCw,
+  ChevronDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -58,17 +59,30 @@ function StatusBadge({ status }: { status: string }) {
   return <span className="text-xs text-slate-500">대기 중</span>;
 }
 
+const CATEGORIES = ['오픈마켓가입', '사업자등록', '강의자료', '도구가이드', '기타'];
+
 export function FileList({ documents }: { documents: DocumentRow[] }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
+  // 낙관적 UI: 상태/카테고리 즉시 반영, 삭제는 즉시 숨김
+  const [overrides, setOverrides] = useState<Record<string, Partial<DocumentRow>>>({});
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+
+  function patch(id: string, p: Partial<DocumentRow>) {
+    setOverrides((o) => ({ ...o, [id]: { ...o[id], ...p } }));
+  }
 
   async function handleDelete(doc: DocumentRow) {
     if (!confirm(`"${doc.filename}" 자료를 삭제할까요?\n관련 청크 ${doc.chunk_count}개가 함께 삭제됩니다.`))
       return;
-    setBusy(doc.id);
+    setRemoved((s) => new Set(s).add(doc.id)); // 즉시 숨김
     const res = await fetch(`/admin/api/documents/${doc.id}`, { method: 'DELETE' });
-    setBusy(null);
     if (!res.ok) {
+      setRemoved((s) => {
+        const n = new Set(s);
+        n.delete(doc.id);
+        return n;
+      });
       toast.error('삭제 실패');
       return;
     }
@@ -77,18 +91,42 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
   }
 
   async function handleReprocess(doc: DocumentRow) {
+    patch(doc.id, { status: 'processing' }); // 즉시 처리중 표시
     setBusy(doc.id);
     const res = await fetch(`/admin/api/documents/${doc.id}/reingest`, { method: 'POST' });
     setBusy(null);
     if (!res.ok) {
-      toast.error('재처리 시작 실패');
+      patch(doc.id, { status: doc.status });
+      toast.error('재처리 실패');
       return;
     }
-    toast.success(`${doc.filename} 재처리 시작`);
+    toast.success(`${doc.filename} 재처리 완료`);
     router.refresh();
   }
 
-  if (documents.length === 0) {
+  async function handleCategory(doc: DocumentRow, category: string) {
+    const prev = doc.category;
+    patch(doc.id, { category }); // 즉시 반영
+    const res = await fetch(`/admin/api/documents/${doc.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category }),
+    });
+    if (!res.ok) {
+      patch(doc.id, { category: prev });
+      toast.error('카테고리 변경 실패');
+      return;
+    }
+    toast.success('카테고리 변경됨');
+    router.refresh();
+  }
+
+  // 낙관적 오버라이드 적용 + 삭제된 항목 제외
+  const visible = documents
+    .filter((d) => !removed.has(d.id))
+    .map((d) => ({ ...d, ...overrides[d.id] }));
+
+  if (visible.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-sm text-slate-500">
         아직 업로드된 자료가 없습니다.
@@ -106,7 +144,7 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
         <div className="col-span-3 md:col-span-1 text-right">작업</div>
       </div>
 
-      {documents.map((doc) => (
+      {visible.map((doc) => (
         <div
           key={doc.id}
           className={`px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 grid grid-cols-12 gap-3 items-center ${
@@ -132,17 +170,30 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
           </div>
 
           <div className="col-span-3 md:col-span-2 hidden md:block">
-            {doc.category ? (
-              <span
-                className={`text-xs px-2 py-1 rounded-full ${
-                  CATEGORY_COLORS[doc.category] ?? 'bg-slate-100 text-slate-600'
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className={`text-xs px-2 py-1 rounded-full inline-flex items-center gap-1 hover:ring-1 hover:ring-slate-300 ${
+                  doc.category
+                    ? CATEGORY_COLORS[doc.category] ?? 'bg-slate-100 text-slate-600'
+                    : 'bg-slate-100 text-slate-400'
                 }`}
+                disabled={busy === doc.id}
               >
-                {CATEGORY_LABELS[doc.category] ?? doc.category}
-              </span>
-            ) : (
-              <span className="text-xs text-slate-400">—</span>
-            )}
+                {doc.category ? CATEGORY_LABELS[doc.category] ?? doc.category : '미분류'}
+                <ChevronDown className="w-3 h-3 opacity-60" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {CATEGORIES.map((cat) => (
+                  <DropdownMenuItem
+                    key={cat}
+                    onClick={() => handleCategory(doc, cat)}
+                    className={doc.category === cat ? 'font-semibold text-blue-600' : ''}
+                  >
+                    {CATEGORY_LABELS[cat] ?? cat}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <div className="col-span-2 hidden md:block text-sm text-slate-600">
