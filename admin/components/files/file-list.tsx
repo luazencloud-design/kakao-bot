@@ -72,6 +72,16 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
     setOverrides((o) => ({ ...o, [id]: { ...o[id], ...p } }));
   }
 
+  // 서버 데이터를 다시 신뢰 — 오버라이드 제거 후 새로고침
+  function clearAndRefresh(id: string) {
+    setOverrides((o) => {
+      const n = { ...o };
+      delete n[id];
+      return n;
+    });
+    router.refresh();
+  }
+
   async function handleDelete(doc: DocumentRow) {
     if (!confirm(`"${doc.filename}" 자료를 삭제할까요?\n관련 청크 ${doc.chunk_count}개가 함께 삭제됩니다.`))
       return;
@@ -101,7 +111,7 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
       return;
     }
     toast.success(`${doc.filename} 재처리 완료`);
-    router.refresh();
+    clearAndRefresh(doc.id); // 오버라이드 제거 → 서버의 'ready' 상태 반영
   }
 
   async function handleCategory(doc: DocumentRow, category: string) {
@@ -118,7 +128,7 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
       return;
     }
     toast.success('카테고리 변경됨');
-    router.refresh();
+    clearAndRefresh(doc.id);
   }
 
   // 낙관적 오버라이드 적용 + 삭제된 항목 제외
