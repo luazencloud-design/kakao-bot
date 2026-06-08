@@ -23,6 +23,7 @@ jobs:
             echo "BOT_PING_URL 변수가 설정되지 않았습니다. 레포 Settings → Variables에서 추가하세요."
             exit 0
           fi
-          echo "Pinging $URL ..."
+          URL="${URL%/}"   # 끝 슬래시 제거 (이중 슬래시 308 방지)
+          echo "Pinging $URL/ ..."
           code=$(curl -s -m 20 -o /dev/null -w "%{http_code}" "$URL/")
           echo "HTTP $code"

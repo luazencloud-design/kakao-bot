@@ -31,3 +31,8 @@ export function extractUtterance(reqBody) {
 export function extractCallbackUrl(reqBody) {
   return reqBody?.userRequest?.callbackUrl ?? null;
 }
+
+// Pull the kakao user id (for query logging / rate limiting).
+export function extractUserId(reqBody) {
+  return reqBody?.userRequest?.user?.id ?? null;
+}
