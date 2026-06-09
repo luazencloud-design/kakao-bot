@@ -37,7 +37,7 @@ export function Sidebar({ email }: Props) {
   const initial = email?.[0]?.toUpperCase() ?? '운';
 
   return (
-    <aside className="w-64 bg-white border-r border-slate-200 flex-col hidden md:flex sticky top-0 h-screen shrink-0">
+    <aside className="w-64 bg-white border-r border-slate-200 flex-col hidden md:flex shrink-0 h-full">
       <div className="p-6 border-b border-slate-100">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center">

@@ -34,9 +34,11 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    // 전체를 뷰포트 높이로 고정. 페이지 자체는 스크롤 안 하고
+    // 메인 영역만 내부 스크롤 → 사이드바는 항상 제자리(콘텐츠 길이 무관).
+    <div className="flex h-screen overflow-hidden bg-slate-50">
       <Sidebar email={user.email} />
-      <main className="flex-1 overflow-hidden">{children}</main>
+      <main className="flex-1 overflow-y-auto">{children}</main>
     </div>
   );
 }
