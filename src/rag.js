@@ -250,6 +250,29 @@ function logQuery({ userId, utterance, rewritten, chunks, answer, latencyMs }) {
   }
 }
 
+// ---------- 에러 로깅 (queries 테이블에 실패 기록) ----------
+// 봇이 "일시적 오류"만 보여주면 운영자가 원인을 모름. 실제 에러를 기록해
+// 어드민에서 무엇이 실패했는지(예: API 키 무효, 할당량 초과) 볼 수 있게 함.
+function logError({ userId, utterance, error, latencyMs }) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[rag] answerQuestion 실패:', message);
+  try {
+    getSupabase()
+      .from('queries')
+      .insert({
+        user_id: userId ?? null,
+        utterance,
+        answer: `[오류] ${message.slice(0, 500)}`,
+        sources: [],
+        latency_ms: latencyMs,
+        llm_provider: 'error',
+      })
+      .then(() => {}, () => {});
+  } catch (_) {
+    /* swallow */
+  }
+}
+
 // ---------- Main entry ----------
 const RETRIEVE_K = 12;
 
@@ -259,7 +282,15 @@ export async function answerQuestion(question, opts = {}) {
   }
   const userId = opts.userId ?? null;
   const t0 = Date.now();
+  try {
+    return await answerQuestionInner(question, userId, t0);
+  } catch (err) {
+    logError({ userId, utterance: question, error: err, latencyMs: Date.now() - t0 });
+    throw err; // app.js가 사용자에게 안내 메시지 보내도록 그대로 전파
+  }
+}
 
+async function answerQuestionInner(question, userId, t0) {
   // 1) 쿼리 재작성 → 임베딩 → 하이브리드 검색 (넉넉히) → LLM 재정렬
   const searchQuery = await rewriteQuery(question);
   const qEmbed = await embedQuery(searchQuery);
