@@ -104,7 +104,7 @@ interface HwpSection {
 // WebVTT 자막 → 발화 텍스트만 추출 (화자 prefix·타임스탬프 제거)
 const SPEAKER_PREFIX_RE = /^[가-힣A-Za-z][가-힣A-Za-z0-9\s_-]{0,24}:\s?/;
 
-function extractVtt(content: string): string {
+export function extractVtt(content: string): string {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const parts: string[] = [];
 
