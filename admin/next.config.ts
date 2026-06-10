@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   },
   // 동적 로드·네이티브 의존이 있는 추출 라이브러리는 번들에서 제외해
   // node_modules에서 직접 require (경로·바이너리 해석 정상화).
-  serverExternalPackages: ['pdf-parse', 'officeparser', 'hwp.js'],
+  serverExternalPackages: ['unpdf', 'officeparser', 'hwp.js'],
 };
 
 export default nextConfig;
