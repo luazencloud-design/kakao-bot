@@ -8,6 +8,18 @@
 
 ---
 
+## 📑 어떤 문서를 봐야 하나요?
+
+| 나는... | 읽을 문서 |
+|---|---|
+| **운영자** (자료 올리고 챗봇 관리, 코딩 모름) | 👉 **[OPERATIONS.md](OPERATIONS.md)** — 이것만 보면 됨 |
+| **개발자** (처음 이 프로젝트를 봄) | 이 README → [ARCHITECTURE.md](ARCHITECTURE.md) 순서 |
+| **배포·환경변수** 작업 | [DEPLOY.md](DEPLOY.md) |
+| 앞으로 **뭘 개선할지** 보고 싶음 | [IMPROVEMENTS.md](IMPROVEMENTS.md) |
+| **Supabase(DB) 셋업**을 처음부터 | [supabase/README.md](supabase/README.md) |
+
+---
+
 ## 🗺 전체 구조
 
 ```
