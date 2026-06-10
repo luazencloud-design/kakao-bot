@@ -5,6 +5,25 @@
 
 ---
 
+## ⚠️ 현재 실제 구조 (이 설계서와 다른 점)
+
+이 문서는 초기 설계로, **Fly.io 배포**를 전제했다. 실제 구현은 진행하면서 바뀌었다:
+
+| 항목 | 초기 설계 | **실제 구현** |
+|---|---|---|
+| 봇 호스팅 | Fly.io | **Vercel** (`naver-bot-one`) — Supabase로 stateless화 + `waitUntil`로 콜백 해결 |
+| 어드민 호스팅 | Fly.io | **Vercel** (`kakao-bot-admin`) — 영상은 자막 우회로 긴 작업 회피, 배치 임베딩으로 타임아웃 회피 |
+| 한국어 검색 | tsvector(BM25) | **pg_trgm word_similarity** (tsvector가 한국어 토큰화 못 함) |
+| Reranker | Cohere | **Gemini LLM 재정렬** (외부 서비스 추가 없이) |
+| 인증 | 매직링크 | **비밀번호** (이메일 rate limit·일회용 토큰 문제로 전환) |
+| 세션·관측성·보안 | 설계됨 | 미구현 (질의/에러 로깅은 구현, Langfuse/시크릿경로/rate limit은 미적용) |
+
+**왜 Vercel로:** Supabase(pgvector)로 데이터를 외부화하니 봇이 stateless가 되어 Vercel 제약(번들 50MB·콜드스타트 JSON 재파싱)이 사라짐. 콜백 suspend는 `@vercel/functions`의 `waitUntil`로 해결. 봇 응답이 ~3.5초라 대부분 동기 처리. 결과적으로 봇·어드민 한 플랫폼(Vercel)으로 단순화.
+
+배포 절차는 [DEPLOY.md](DEPLOY.md), 현황 요약은 [README.md](README.md) 참고. 아래는 초기 설계 원문(상당수는 여전히 유효).
+
+---
+
 ## 1. 요구사항
 
 ### 1.1 기능 요구사항

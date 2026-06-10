@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { requireAdmin } from '@/lib/auth-guard';
 import { createServiceClient } from '@/lib/supabase/server';
 import { processDocument, inferCategory } from '@/lib/ingest/process';
+import { safeStoragePath } from '@/lib/storage';
 
 // Vercel: Hobby는 10초로 캡됨(문서는 배치 임베딩으로 보통 통과),
 // Pro는 60초(기본)~300초. 미디어 전사하려면 Pro 필요.
@@ -67,12 +68,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 1. Storage 업로드
-  // Supabase Storage 키는 ASCII만 허용(한글·공백 불가). 원본 파일명은
-  // documents.filename에 보존하고, storage 키는 UUID + 확장자로 안전하게.
-  const ext = filename.includes('.') ? filename.split('.').pop()!.toLowerCase() : 'bin';
-  const safeExt = ext.replace(/[^a-z0-9]/g, '');
-  const storagePath = `uploads/${crypto.randomUUID()}.${safeExt || 'bin'}`;
+  // 1. Storage 업로드 — 원본 파일명은 documents.filename에 보존,
+  // storage 키는 UUID+확장자로 안전하게 (safeStoragePath, 한글 키 버그 방지)
+  const storagePath = safeStoragePath(filename);
   const { error: upErr } = await admin.storage
     .from('source-files')
     .upload(storagePath, buffer, {
