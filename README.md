@@ -120,6 +120,7 @@ EMBED_MODEL=gemini-embedding-001
 TOP_K=4
 SUPABASE_URL               # 접두사 없음
 SUPABASE_SERVICE_ROLE_KEY
+WEBHOOK_SECRET             # (선택) 웹훅 시크릿 경로. 아래 "웹훅 보안" 참고
 ```
 
 **어드민 (`kakao-bot-admin`, `admin/.env.local`):**
@@ -181,11 +182,39 @@ npm run ingest     # 청킹·임베딩 → Supabase
 
 ---
 
+## 🔒 웹훅 보안
+
+봇 웹훅에 시크릿 경로 + rate limit + 입력 가드가 적용돼 있다 (`src/security.js`).
+
+- **시크릿 경로**: `WEBHOOK_SECRET` 환경변수 설정 시, 카카오 스킬 URL이 `https://<도메인>/kakao/skill/<시크릿>` 형태여야 통과. 모르면 403. (미설정 시 기존 `/kakao/skill`도 호환 동작)
+- **Rate limit**: 사용자(user.id)당 분당 20회 (인메모리 — 콜드스타트 시 초기화, 엄격하게는 Redis 필요)
+- **입력 가드**: 500자 제한, 빈 입력 차단, 프롬프트 인젝션 의심 문구 무력화
+
+### 시크릿 켜는 법 (무중단 순서)
+1. **카카오 오픈빌더** 스킬 URL을 `/kakao/skill/<시크릿>` 으로 변경 (아직 Vercel에 시크릿 없어 호환 모드로 통과)
+2. **Vercel 봇**(`naver-bot-one`)에 `WEBHOOK_SECRET` 추가 → Redeploy
+3. 이제 옛 URL은 403, 새 URL만 동작 (오픈빌더는 이미 새 URL이라 안 끊김)
+
+> 시크릿 생성: `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`
+
+---
+
+## 🧪 테스트
+
+```bash
+cd admin
+npm test          # Vitest 단위 테스트 24개 (순수 함수 + 버그 회귀)
+```
+
+`chunkText`(청킹), `inferCategory`(분류), `extractVtt`(자막), `safeStoragePath`(한글 키 버그 회귀), 표시 헬퍼를 커버. 외부 의존(Gemini·DB) 없는 순수 함수 위주.
+
+---
+
 ## 📌 알려진 제약
 
 - **Gemini 단일 벤더** — 503/키 문제 시 봇 전체 영향 (생성 fallback은 미구현)
 - **영상 raw 처리 사실상 불가** — 자막 우회 필요
-- **봇 웹훅 공개** — 시크릿 경로·rate limit 미적용 (비용은 AI Studio 한도로 방어 중)
+- **Rate limit이 인메모리** — 서버리스 인스턴스별이라 콜드스타트 시 초기화. 엄격하게는 Upstash Redis 필요
 - **keep-warm** — GitHub Actions 스케줄은 best-effort(5분 안 지켜짐). 정확하려면 UptimeRobot 등 외부 핑
 
 개선 로드맵은 [IMPROVEMENTS.md](IMPROVEMENTS.md), 설계 상세는 [ARCHITECTURE.md](ARCHITECTURE.md).

@@ -4,8 +4,8 @@
 취미 프로토타입 수준 권고는 배제하고, SLA · 백업 · 장애 대응 · 비용 예측 관점까지 포함.
 
 > **진행 현황 (이 문서는 초기 로드맵):**
-> - ✅ 완료: Supabase pgvector 이관, RAG 품질(쿼리 재작성·한국어 하이브리드·LLM 재정렬·배치 임베딩), 어드민(업로드·테스트·통계·피드백 해결워크플로·설정), 질의/에러 로깅, 배포(봇·어드민 둘 다 **Vercel**), keep-warm
-> - ⏸ 미완: 보안(시크릿 경로·rate limit), 관측성(Langfuse·Sentry), LLM fallback, 세션
+> - ✅ 완료: Supabase pgvector 이관, RAG 품질(쿼리 재작성·한국어 하이브리드·LLM 재정렬·배치 임베딩), 어드민(업로드·테스트·통계·피드백 해결워크플로·설정), 질의/에러 로깅, 배포(봇·어드민 둘 다 **Vercel**), keep-warm, **웹훅 보안(시크릿 경로·rate limit·입력 가드)**, **단위 테스트(Vitest 24개)**
+> - ⏸ 미완: 관측성(Langfuse·Sentry), LLM fallback(생성), 평가셋(Ragas), 세션(멀티턴), 긴 영상 async 처리
 > - ⚠️ 이 문서의 **Fly.io 권고는 폐기됨** → 실제는 Vercel. 이유는 [ARCHITECTURE.md](ARCHITECTURE.md) 상단 참고.
 
 ---
