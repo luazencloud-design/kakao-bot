@@ -23,10 +23,13 @@ export async function extractText(
       return { text: extractVtt(buffer.toString('utf-8')) };
 
     case 'pdf': {
-      const { PDFParse } = await import('pdf-parse');
-      const parser = new PDFParse({ data: new Uint8Array(buffer) });
-      const result = await parser.getText();
-      const text = result.text ?? '';
+      // unpdf: 서버리스(Vercel Node)에서 동작하는 pdfjs 래퍼.
+      // pdf-parse는 pdfjs가 DOMMatrix 등 브라우저 API를 요구해
+      // Vercel Node 런타임에서 "DOMMatrix is not defined"로 실패함.
+      const { extractText: pdfExtract, getDocumentProxy } = await import('unpdf');
+      const pdf = await getDocumentProxy(new Uint8Array(buffer));
+      const { text: raw } = await pdfExtract(pdf, { mergePages: true });
+      const text = typeof raw === 'string' ? raw : (raw as string[]).join('\n');
       if (text.trim().length < 50) {
         throw new Error(
           '텍스트가 거의 추출되지 않았습니다. 스캔된 이미지 PDF로 보입니다.',
