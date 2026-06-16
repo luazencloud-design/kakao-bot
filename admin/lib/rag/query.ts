@@ -6,7 +6,7 @@ import { embedQuery } from '@/lib/ingest/embed';
 import { rewriteQuery } from '@/lib/rag/enhance';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
-const TOP_K = parseInt(process.env.TOP_K || '4', 10);
+const TOP_K = parseInt(process.env.TOP_K || '6', 10);
 
 export interface RetrievedChunk {
   id: number;
@@ -77,6 +77,7 @@ export async function ragQuery(question: string): Promise<RagResult> {
 
 규칙:
 1. 반드시 아래 [참고 자료]에 있는 내용만 근거로 답변하세요. 자료에 없는 내용은 절대 추측하거나 일반 상식으로 보충하지 마세요.
+   특히 전화번호·사이트명(예: 홈택스/정부24)·매장명·메뉴 경로·구체 수치(금액·기간·개수·시간)는 [참고 자료]에 그대로 적혀 있는 것만 쓰세요. 자료에 없는 구체값은 지어내지 말고 그 부분은 생략하세요.
 2. 자료에 답이 없으면 "해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요."라고 답하세요.
 3. 답변은 친절하고 간결하게, 본문은 600자 내외로 작성하세요. 여러 항목은 번호 목록으로 정리하세요.
 4. 답변 본문 다음에 빈 줄을 하나 두고, 마지막 줄에 "📚 출처: <파일명>" 형식으로 실제로 참고한 자료의 파일명을 명시하세요. 여러 자료를 참고했다면 쉼표로 구분하세요. 자료에 답이 없어 모른다고 답한 경우에는 출처 줄을 생략하세요.
@@ -117,7 +118,7 @@ async function generateWithGemini(systemPrompt: string, userQuestion: string): P
     contents: [{ role: 'user', parts: [{ text: userQuestion }] }],
     generationConfig: {
       maxOutputTokens: 2048,
-      temperature: 0.3,
+      temperature: 0, // 결정성 — 경계 질문 "없음↔답함" 흔들림 방지 (봇과 동일)
       thinkingConfig: { thinkingBudget: 0 },
     },
   });

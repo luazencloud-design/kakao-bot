@@ -71,13 +71,14 @@ kakao-bot/
 
 ### 봇 (질문 → 답변)
 1. 카카오가 `/kakao/skill`로 질문 POST
-2. **쿼리 재작성** (구어체 → 검색 키워드, Gemini)
-3. **임베딩** (Gemini `gemini-embedding-001`, 768차원)
-4. **하이브리드 검색** (Supabase `hybrid_search` RPC: pgvector dense + pg_trgm 한국어 sparse → RRF)
-5. **LLM 재정렬** (top-12 → top-4, 노이즈 제거)
-6. **답변 생성** (Gemini, 자료에만 근거 + 출처 명시)
-7. 5초 초과 대비 **콜백 모드**: 5초 안엔 "생성 중" 정적 응답만 보내고 실답변은 1회용 `callbackUrl`로 1분 안에 전달(`waitUntil` + 45초 데드라인 가드). 활성화는 [DEPLOY.md](DEPLOY.md) C절
-8. 모든 질의를 `queries` 테이블에 로깅 (실패 시 `[오류]`로 기록)
+2. **쿼리 재작성** (구어체 → 검색 키워드, Gemini). **`query_rewrites` 캐시** — 같은 질문은 저장된 재작성을 재사용해 검색이 결정적. 봇·어드민이 캐시를 공유해 답이 일치
+3. **임베딩** (원질문 기준, Gemini `gemini-embedding-001`, 768차원)
+4. **하이브리드 검색** (Supabase `hybrid_search` RPC: pgvector dense + pg_trgm 한국어 sparse → RRF, 동점은 `id`로 결정적 정렬, top-K)
+5. **답변 생성** (Gemini, `temperature 0` — 자료에만 근거 + 출처 명시. 같은 질문엔 같은 답)
+6. 5초 초과 대비 **콜백 모드**: 5초 안엔 "생성 중" 정적 응답만 보내고 실답변은 1회용 `callbackUrl`로 1분 안에 전달(`waitUntil` + 45초 데드라인 가드). 활성화는 [DEPLOY.md](DEPLOY.md) C절
+7. 모든 질의를 `queries` 테이블에 로깅 (실패 시 `[오류]`로 기록)
+
+> **일관성 설계:** 같은 질문에 다른 답이 나오던 문제(재작성·RRF 동점·생성 온도의 3중 비결정)를 ① 재작성 캐시 ② `id` 동점 정렬 ③ `temperature 0`으로 제거. 13개 질문 5회 반복 모두 동일 답 검증.
 
 ### 어드민 (자료 관리)
 - **자료 관리**: 다중 업로드(진행 시각화)·삭제·재처리·카테고리 수정
@@ -120,7 +121,7 @@ kakao-bot/
 GEMINI_API_KEY              # AI Studio 키 (유효한 것!)
 GEMINI_MODEL=gemini-flash-lite-latest
 EMBED_MODEL=gemini-embedding-001
-TOP_K=4
+TOP_K=6                    # 검색 청크 수 (완결성↑). 일관성과는 무관
 SUPABASE_URL               # 접두사 없음
 SUPABASE_SERVICE_ROLE_KEY
 WEBHOOK_SECRET             # (선택) 웹훅 시크릿 경로. 아래 "웹훅 보안" 참고
