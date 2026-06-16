@@ -3,11 +3,10 @@
 
 import { createServiceClient } from '@/lib/supabase/server';
 import { embedQuery } from '@/lib/ingest/embed';
-import { rewriteQuery, rerank } from '@/lib/rag/enhance';
+import { rewriteQuery } from '@/lib/rag/enhance';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 const TOP_K = parseInt(process.env.TOP_K || '4', 10);
-const RETRIEVE_K = 12; // rerank 전에 넉넉히 검색
 
 export interface RetrievedChunk {
   id: number;
@@ -20,31 +19,32 @@ export interface RagResult {
   answer: string;
   chunks: RetrievedChunk[];
   rewrittenQuery: string;
-  timings: { rewrite: number; embed: number; search: number; rerank: number; generate: number; total: number };
+  timings: { prep: number; search: number; generate: number; total: number };
 }
 
 export async function ragQuery(question: string): Promise<RagResult> {
   const t0 = Date.now();
 
-  // 0. 쿼리 재작성 (구어체 → 검색 키워드)
-  const searchQuery = await rewriteQuery(question);
-  const tRewrite = Date.now();
+  // 1. 재작성(키워드 보강)과 임베딩을 병렬 — 봇(src/rag.js)과 동일 로직.
+  //    임베딩은 원질문 기준(의미 벡터가 깔끔), 재작성은 sparse 검색어 보강용
+  //    (1.2s 타임아웃). 두 LLM/임베딩 호출을 겹쳐 임계경로를 줄인다.
+  const [searchQuery, qEmbed] = await Promise.all([
+    rewriteQuery(question),
+    embedQuery(question),
+  ]);
+  const tPrep = Date.now();
 
-  // 1. 임베딩 (재작성된 쿼리로)
-  const qEmbed = await embedQuery(searchQuery);
-  const t1 = Date.now();
-
-  // 2. 검색 (넉넉히 RETRIEVE_K개)
+  // 2. 하이브리드 검색에서 곧바로 top-K (별도 LLM 재정렬 제거 — RRF 순위 신뢰).
   const supabase = createServiceClient();
   const { data, error } = await supabase.rpc('hybrid_search', {
     query_embedding: qEmbed,
     query_text: searchQuery,
-    match_count: RETRIEVE_K,
+    match_count: TOP_K,
   });
   if (error) throw new Error(`hybrid_search 실패: ${error.message}`);
-  const t2 = Date.now();
+  const tSearch = Date.now();
 
-  const candidates: RetrievedChunk[] = (data ?? []).map(
+  const chunks: RetrievedChunk[] = (data ?? []).map(
     (row: { id: number; source: string; chunk_text: string; rrf_score: number }) => ({
       id: row.id,
       source: row.source ?? '미상',
@@ -53,22 +53,16 @@ export async function ragQuery(question: string): Promise<RagResult> {
     }),
   );
 
-  // 3. LLM 재정렬 → top-K
-  const chunks = await rerank(question, candidates, TOP_K);
-  const tRerank = Date.now();
-
   if (chunks.length === 0) {
     return {
       answer: '해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.',
       chunks: [],
       rewrittenQuery: searchQuery,
       timings: {
-        rewrite: tRewrite - t0,
-        embed: t1 - tRewrite,
-        search: t2 - t1,
-        rerank: tRerank - t2,
+        prep: tPrep - t0,
+        search: tSearch - tPrep,
         generate: 0,
-        total: tRerank - t0,
+        total: tSearch - t0,
       },
     };
   }
@@ -102,11 +96,9 @@ ${context}`;
     chunks,
     rewrittenQuery: searchQuery,
     timings: {
-      rewrite: tRewrite - t0,
-      embed: t1 - tRewrite,
-      search: t2 - t1,
-      rerank: tRerank - t2,
-      generate: t3 - tRerank,
+      prep: tPrep - t0,
+      search: tSearch - tPrep,
+      generate: t3 - tSearch,
       total: t3 - t0,
     },
   };
