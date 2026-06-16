@@ -99,11 +99,14 @@ kakao-bot/
 | HWP | hwp.js | HWP 5.x. 구버전·이미지 기반 불가 |
 | TXT | 직접 읽기 | FAQ 형식(Q/A 빈 줄 구분) 권장 |
 | VTT | 자막 파서 | **긴 강의는 이걸 권장** (Zoom·YouTube 자동 자막) |
-| MP3·MP4 | Gemini Files API 전사 | ⚠️ **50MB 한도 + Vercel 타임아웃** — 아래 참고 |
+| MP3 | Gemini Files API 전사 | 오디오. ⚠️ 긴 파일은 전사 시간 ↑ |
+| ~~MP4(영상)~~ | **미지원** | 전사가 느려 함수 타임아웃 위험 → 자막(VTT)으로 |
 
-### ⚠️ 영상 처리 주의
-- **Supabase Storage 50MB 한도** → 1시간 강의 영상(수백 MB)은 업로드 불가
-- **Vercel 함수 타임아웃** (Hobby 10초 / Pro 60~300초) → 긴 전사는 실패
+### ⬆️ 업로드 방식 (큰 파일)
+업로드는 브라우저가 **서명 URL로 Supabase Storage에 직접** 올린다(`upload-zone.tsx` → `/admin/api/upload/sign`). Vercel 함수를 거치지 않아 **요청 본문 4.5MB 한계를 우회**, 버킷 한도인 **50MB까지** 받는다. 업로드가 끝나면 `/admin/api/upload`가 Storage에서 내려받아 추출·임베딩한다.
+
+### ⚠️ 영상은 미지원
+- 영상(MP4)은 받지 않는다 — 전사가 느려 함수 타임아웃 위험이 큼
 - **권장: 영상 대신 자막(VTT) 업로드.** Zoom·YouTube가 자동 생성, 1시간도 수백 KB라 즉시 처리됨
 
 ---

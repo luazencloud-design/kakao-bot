@@ -113,9 +113,18 @@ Supabase → Authentication → URL Configuration:
 - [ ] 봇: 콜백 켠 경우 "답변 생성 중..." 후 실답변 오는지 (로그 `[callback] delivered`)
 - [ ] 어드민: 로그인 → 파일 목록
 - [ ] 어드민: **PDF 업로드** (unpdf로 추출 — 스캔 PDF는 실패가 정상)
+- [ ] 어드민: **큰 파일 업로드**(4.5MB 초과 PPTX 등) — 서명 URL 직접 업로드가 도는지 (예전엔 413)
 - [ ] 어드민: 답변 테스트 페이지
+
+## 업로드 아키텍처 (4.5MB 한계 우회)
+
+Vercel 서버리스 함수는 **요청 본문 4.5MB**를 넘으면 413으로 막는다. 그래서 업로드를 2단계로 분리:
+1. `/admin/api/upload/sign` — 작은 JSON으로 **서명 URL** 발급 (인증·중복·형식·용량 검증만)
+2. 브라우저가 **Supabase Storage에 직접** 업로드 (`uploadToSignedUrl`, Vercel 우회 → 50MB까지)
+3. `/admin/api/upload` — 작은 JSON으로 처리 요청 → 서버가 Storage에서 내려받아 추출·임베딩
 
 ## 알려진 리스크
 
 - **PDF 추출(unpdf)**: pdf-parse는 Vercel Node에서 `DOMMatrix is not defined`로 실패해 `unpdf`로 교체함(`admin/lib/ingest/extract.ts`). 스캔(이미지) PDF는 여전히 텍스트 추출 불가 — 정상.
-- 특수 형식·자막 없는 긴 영상은 CLI(`npm run ocr`)로 우회.
+- **PPTX 추출(officeparser)**: 네이티브 의존이 있어 Vercel 서버리스 동작은 첫 PPTX 업로드로 확인 필요. 실패 시 unpdf처럼 서버리스용 추출기로 교체.
+- **영상(MP4) 미지원**: 전사 타임아웃 위험으로 제거. 자막(VTT)으로 우회.
