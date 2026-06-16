@@ -41,9 +41,13 @@ function normalizeQuestion(q: string): string {
 // query_rewrites 캐시로 같은 질문은 같은 재작성을 재사용 → 결정적. 봇(src/rag.js)과
 // 같은 테이블·같은 프롬프트를 공유하므로 어드민 테스트와 봇 답이 일치한다.
 // REWRITE=off 면 건너뜀. 실패해도 원문 사용 (graceful degradation).
+// 재작성 프롬프트 버전 — 봇(src/rag.js)과 동일하게 유지. 프롬프트 변경 시 올려
+// 옛 캐시를 자동 무효화(키가 안 겹침).
+const REWRITE_VERSION = 'v2';
+
 export async function rewriteQuery(question: string): Promise<string> {
   if (process.env.REWRITE === 'off') return question;
-  const key = normalizeQuestion(question);
+  const key = `${REWRITE_VERSION}:${normalizeQuestion(question)}`;
   const apply = (kw: string) => (kw ? `${question} ${kw}` : question);
   const admin = createServiceClient();
 
@@ -64,7 +68,9 @@ export async function rewriteQuery(question: string): Promise<string> {
   try {
     const prompt = `다음은 사업자등록·오픈마켓 가입·강의 안내 챗봇에 들어온 사용자 질문입니다.
 이 질문을 문서 검색에 적합하도록 핵심 키워드 중심으로 한 줄로 재작성하세요.
-동의어나 정식 명칭이 있으면 함께 포함하세요. 설명 없이 재작성된 검색어만 출력하세요.
+동의어나 정식 명칭이 있으면 함께 포함하세요.
+상품·브랜드·카테고리처럼 영어로도 표기되는 용어는 영어 키워드도 함께 넣으세요 (예: 헬스뷰티 → Health Beauty, 롤렉스 → rolex, 순위 → ranking). 영어 자료(상품 검색어 순위 등)를 한국어 질문으로도 찾기 위함입니다.
+설명 없이 재작성된 검색어만 출력하세요.
 
 사용자 질문: ${question}
 
