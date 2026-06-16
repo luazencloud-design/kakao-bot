@@ -16,9 +16,10 @@
 | 한국어 검색 | tsvector(BM25) | **pg_trgm word_similarity** (tsvector가 한국어 토큰화 못 함) |
 | Reranker | Cohere | **Gemini LLM 재정렬** (외부 서비스 추가 없이) |
 | 인증 | 매직링크 | **비밀번호** (이메일 rate limit·일회용 토큰 문제로 전환) |
-| 세션·관측성·보안 | 설계됨 | 미구현 (질의/에러 로깅은 구현, Langfuse/시크릿경로/rate limit은 미적용) |
+| 세션·관측성·보안 | 설계됨 | **시크릿경로·rate limit·입력가드 구현**(`src/security.js`), 질의/에러 로깅 구현. Langfuse 등 관측 플랫폼은 미적용 |
+| 카카오 콜백 윈도 | "30초" 가정 | **1분(60초)** — 공식 `callbackUrl valid time: 1min`, 1회용 (`maxDuration:60`으로 정렬) |
 
-**왜 Vercel로:** Supabase(pgvector)로 데이터를 외부화하니 봇이 stateless가 되어 Vercel 제약(번들 50MB·콜드스타트 JSON 재파싱)이 사라짐. 콜백 suspend는 `@vercel/functions`의 `waitUntil`로 해결. 봇 응답이 ~3.5초라 대부분 동기 처리. 결과적으로 봇·어드민 한 플랫폼(Vercel)으로 단순화.
+**왜 Vercel로:** Supabase(pgvector)로 데이터를 외부화하니 봇이 stateless가 되어 Vercel 제약(번들 50MB·콜드스타트 JSON 재파싱)이 사라짐. 콜백 suspend는 `@vercel/functions`의 `waitUntil`로 해결. 봇 동기 응답이 warm 기준 ~5초(p95 20초·최대 27초로 튀어 동기 5초 SLA 초과가 잦음)라, 무응답을 없애려면 **콜백 모드(1분 윈도)를 메인 경로로** 쓰는 것이 구조적 해법.
 
 배포 절차는 [DEPLOY.md](DEPLOY.md), 현황 요약은 [README.md](README.md) 참고. 아래는 초기 설계 원문(상당수는 여전히 유효).
 
@@ -38,7 +39,7 @@
 | 항목 | 목표 |
 |---|---|
 | 가용성 | 99.5% (월 3.6h 허용) |
-| 응답시간 p95 | 동기 3초 / 콜백 30초 이내 |
+| 응답시간 p95 | 동기 ≤5초(카카오 SLA, 목표 3초) / 콜백 ≤1분(callbackUrl 유효시간) |
 | 동시 사용자 | DAU 500 기준 설계, 5,000까지 수직 확장 |
 | 데이터 갱신 latency | 텍스트 30초, 영상 3분 이내 |
 | 운영자 학습곡선 | "구글 드라이브 수준"의 인터페이스 |
@@ -160,7 +161,7 @@
 |---|---|---|
 | `GET /` | 헬스체크 | 공개 |
 | `POST /kakao/skill/:secret` | 카카오 동기 응답 (5초 내) | URL secret |
-| `POST /kakao/callback/:secret` | 카카오 콜백 응답 (30초) | URL secret |
+| `POST /kakao/skill/callback/:secret` | 카카오 콜백 응답 (1분 윈도) | URL secret |
 | `GET /admin/*` | 어드민 정적 자산 | 공개 (HTML만) |
 | `POST /admin/api/*` | 어드민 API | Supabase JWT |
 
@@ -425,13 +426,13 @@ $$;
 ### 5.2 봇 응답 (콜백 - 영상 검색·복잡 질의)
 
 ```
-카카오 → POST /kakao/callback/{secret}
-  → 즉시 useCallback 응답 ("답변 생성 중...")
-  → 백그라운드: RAG full pipeline (장수명 프로세스라 안전)
-  → 완료 시 callbackUrl로 POST
+카카오 → POST /kakao/skill/callback/{secret}
+  → 즉시 useCallback 응답 ("답변 생성 중... 최대 1분")  [5초 동기 SLA 안에 반환]
+  → 백그라운드: RAG full pipeline + 45초 데드라인 가드
+  → 완료(또는 데드라인 fallback) 시 callbackUrl로 1회 POST  [1분 윈도 내]
 ```
 
-**Fly.io 장수명 프로세스라 백그라운드 작업 안전.** Vercel suspend 문제 해소.
+**Vercel에선 `waitUntil`로 백그라운드 작업 유지**(`maxDuration:60`). callbackUrl은 1분 유효·1회용이라, 45초 데드라인을 걸어 만료 전 fallback이라도 반드시 전달한다.
 
 ### 5.3 파일 업로드
 

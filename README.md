@@ -76,7 +76,7 @@ kakao-bot/
 4. **하이브리드 검색** (Supabase `hybrid_search` RPC: pgvector dense + pg_trgm 한국어 sparse → RRF)
 5. **LLM 재정렬** (top-12 → top-4, 노이즈 제거)
 6. **답변 생성** (Gemini, 자료에만 근거 + 출처 명시)
-7. 5초 초과 시 콜백 모드(`waitUntil`)로 안전 처리
+7. 5초 초과 대비 **콜백 모드**: 5초 안엔 "생성 중" 정적 응답만 보내고 실답변은 1회용 `callbackUrl`로 1분 안에 전달(`waitUntil` + 45초 데드라인 가드). 활성화는 [DEPLOY.md](DEPLOY.md) C절
 8. 모든 질의를 `queries` 테이블에 로깅 (실패 시 `[오류]`로 기록)
 
 ### 어드민 (자료 관리)
@@ -94,7 +94,7 @@ kakao-bot/
 
 | 형식 | 처리 | 비고 |
 |---|---|---|
-| PDF | pdf-parse | 텍스트 기반. 스캔 이미지 PDF는 추출 실패 |
+| PDF | unpdf | 텍스트 기반. 스캔 이미지 PDF는 추출 실패 (pdf-parse는 Vercel Node에서 DOMMatrix 에러라 교체) |
 | PPTX | officeparser | 텍스트 기반. 이미지 위주 슬라이드는 약함 |
 | HWP | hwp.js | HWP 5.x. 구버전·이미지 기반 불가 |
 | TXT | 직접 읽기 | FAQ 형식(Q/A 빈 줄 구분) 권장 |
