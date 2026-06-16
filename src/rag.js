@@ -163,9 +163,13 @@ function normalizeQuestion(q) {
   return q.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?!.]+$/, '');
 }
 
+// 재작성 프롬프트 버전. 프롬프트를 바꾸면 올려서 옛 캐시를 자동 무효화한다
+// (옛 코드가 쓴 키와 안 겹쳐, 배포 순서에 무관하게 새 프롬프트 결과만 쓰임).
+const REWRITE_VERSION = 'v2';
+
 async function rewriteQuery(question) {
   if (process.env.REWRITE === 'off') return question;
-  const key = normalizeQuestion(question);
+  const key = `${REWRITE_VERSION}:${normalizeQuestion(question)}`;
   const apply = (kw) => (kw ? `${question} ${kw}` : question);
 
   // 1) 캐시 조회 (히트 시 결정적으로 같은 검색어 재사용; ''는 "재작성 없음" 고정)
@@ -185,7 +189,9 @@ async function rewriteQuery(question) {
   try {
     const prompt = `다음은 사업자등록·오픈마켓 가입·강의 안내 챗봇에 들어온 사용자 질문입니다.
 이 질문을 문서 검색에 적합하도록 핵심 키워드 중심으로 한 줄로 재작성하세요.
-동의어나 정식 명칭이 있으면 함께 포함하세요. 설명 없이 재작성된 검색어만 출력하세요.
+동의어나 정식 명칭이 있으면 함께 포함하세요.
+상품·브랜드·카테고리처럼 영어로도 표기되는 용어는 영어 키워드도 함께 넣으세요 (예: 헬스뷰티 → Health Beauty, 롤렉스 → rolex, 순위 → ranking). 영어 자료(상품 검색어 순위 등)를 한국어 질문으로도 찾기 위함입니다.
+설명 없이 재작성된 검색어만 출력하세요.
 
 사용자 질문: ${question}
 
