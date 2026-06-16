@@ -75,26 +75,56 @@ Supabase → Authentication → URL Configuration:
 
 ---
 
+## C. 콜백 모드 활성화 (5초 제한 우회) — 권장
+
+**문제:** 카카오 동기 스킬은 **5초 안에** 답해야 한다(`skill timeout: 5sec`, 카카오 쪽 하드 제한). 그런데 RAG 파이프라인이 Gemini를 3번 순차 호출해 warm에서도 ~5초, 느린 구간엔 p95 20초·최대 27초까지 튄다 → 그 질문은 카카오가 버려서 **무응답**이 된다. Vercel Pro·호스트 변경으로는 못 푼다(카카오 제한이라).
+
+**해법:** 콜백 모드. 봇이 5초 안엔 "답변 생성 중..." **정적 응답만** 즉시 보내고(이건 Gemini 안 거쳐 수십ms), 실제 답변은 카카오가 준 **1회용 `callbackUrl`로 1분(60초) 안에** 비동기 전달한다. 코드(`src/app.js` `handleCallback`)는 이미 `waitUntil` + 45초 데드라인 가드로 구현돼 있다 — 남은 건 카카오 설정뿐.
+
+> 공식 근거: `callbackUrl valid time: 1min`, 1회용 (카카오 비즈니스 'AI 챗봇 콜백 개발 가이드'). 그래서 `vercel.json`의 `maxDuration`을 **60**으로 맞춰 함수가 윈도 끝까지 살아있게 했다.
+
+### 활성화 절차
+1. **권한 신청** — 챗봇 관리자센터 → **설정 → AI 챗봇 관리**에서 Callback API(콜백) 사용 권한 신청. **승인에 영업일 1~2일** 소요.
+2. **블록 설정** — 승인 후, RAG 답변을 내보내는 스킬 블록 상세에서 **Callback API 설정(useCallback) 활성화** + 대기 메시지(기본응답) 작성.
+3. **URL 변경** — 그 블록의 스킬 연결 URL을 동기가 아니라 콜백 엔드포인트로:
+   - `https://<봇도메인>/kakao/skill/callback/<WEBHOOK_SECRET>`
+   - (시크릿 미설정 시 `/kakao/skill/callback`)
+4. **검증** — 카카오로 질문 후 Vercel 봇 로그에서 `[callback] callbackUrl: yes` 확인. `no`가 뜨면 오픈빌더 useCallback이 안 켜진 것 → 코드가 동기 fallback으로 돌아 다시 5초 벽.
+5. **첫 응답 콜드스타트 주의** — 콜백을 켜도 *첫* 정적 응답은 5초 SLA를 받는다. keep-warm 핑을 유지해 콜드스타트가 그 5초를 위협하지 않게 한다.
+
+> ⚠️ 잔존 한계: ① 1분 윈도를 넘기면(현재 최대 27초라 여유 있음) 유실, ② `callbackUrl`은 1회용이라 전달 자체가 네트워크 오류로 실패하면 그 답은 유실(코드가 데드라인 fallback은 보장하나 전송 실패까지는 못 막음).
+
+---
+
 ## 플랜 고려
 
-| 작업 | Hobby (10초) | Pro (60~300초) |
+| 작업 | Hobby | Pro |
 |---|---|---|
-| 봇 동기 응답 (~3.5초) | ✅ | ✅ |
-| 봇 콜백 (waitUntil, ~3.5초) | ✅ 10초 내 | ✅ |
+| 봇 동기 응답 (warm ~5초) | ⚠️ 5초 경계 — 콜백 권장 | ⚠️ 동일(카카오 제한) |
+| 봇 콜백 (waitUntil, 1분 윈도) | ✅ `maxDuration:60` | ✅ |
 | 문서 업로드 (배치 임베딩) | ✅ 대부분 | ✅ |
 | 미디어 전사 (1~2분) | ❌ | ✅ (maxDuration=300) |
 
-**문서·자막 위주면 Hobby로 시작. 미디어 전사·여유 필요하면 Pro.**
+**문서·자막 위주면 Hobby로 시작. 미디어 전사·여유 필요하면 Pro.** 5초 무응답은 플랜이 아니라 **콜백 모드(위 C)**로 푼다.
 
 ## 배포 후 확인
 
 - [ ] 봇: 카카오로 질문 → 답변 오는지
-- [ ] 봇: 느린 경우 콜백으로 답 오는지 (waitUntil 동작 확인)
+- [ ] 봇: 콜백 켠 경우 "답변 생성 중..." 후 실답변 오는지 (로그 `[callback] delivered`)
 - [ ] 어드민: 로그인 → 파일 목록
-- [ ] 어드민: **PDF 업로드** (pdf-parse 워커가 Vercel 서버리스에서 도는지 — 유일한 불확실 지점)
+- [ ] 어드민: **PDF 업로드** (unpdf로 추출 — 스캔 PDF는 실패가 정상)
+- [ ] 어드민: **큰 파일 업로드**(4.5MB 초과 PPTX 등) — 서명 URL 직접 업로드가 도는지 (예전엔 413)
 - [ ] 어드민: 답변 테스트 페이지
+
+## 업로드 아키텍처 (4.5MB 한계 우회)
+
+Vercel 서버리스 함수는 **요청 본문 4.5MB**를 넘으면 413으로 막는다. 그래서 업로드를 2단계로 분리:
+1. `/admin/api/upload/sign` — 작은 JSON으로 **서명 URL** 발급 (인증·중복·형식·용량 검증만)
+2. 브라우저가 **Supabase Storage에 직접** 업로드 (`uploadToSignedUrl`, Vercel 우회 → 50MB까지)
+3. `/admin/api/upload` — 작은 JSON으로 처리 요청 → 서버가 Storage에서 내려받아 추출·임베딩
 
 ## 알려진 리스크
 
-- **pdf-parse(pdfjs) 워커**: 로컬은 `serverExternalPackages`로 해결. Vercel 서버리스 동작은 첫 PDF 업로드로 확인.
-- 문제 시 해당 형식만 CLI(`npm run ocr`)로 우회.
+- **PDF 추출(unpdf)**: pdf-parse는 Vercel Node에서 `DOMMatrix is not defined`로 실패해 `unpdf`로 교체함(`admin/lib/ingest/extract.ts`). 스캔(이미지) PDF는 여전히 텍스트 추출 불가 — 정상.
+- **PPTX 추출(officeparser)**: 네이티브 의존이 있어 Vercel 서버리스 동작은 첫 PPTX 업로드로 확인 필요. 실패 시 unpdf처럼 서버리스용 추출기로 교체.
+- **영상(MP4) 미지원**: 전사 타임아웃 위험으로 제거. 자막(VTT)으로 우회.

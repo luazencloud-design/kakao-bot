@@ -76,7 +76,7 @@ kakao-bot/
 4. **하이브리드 검색** (Supabase `hybrid_search` RPC: pgvector dense + pg_trgm 한국어 sparse → RRF)
 5. **LLM 재정렬** (top-12 → top-4, 노이즈 제거)
 6. **답변 생성** (Gemini, 자료에만 근거 + 출처 명시)
-7. 5초 초과 시 콜백 모드(`waitUntil`)로 안전 처리
+7. 5초 초과 대비 **콜백 모드**: 5초 안엔 "생성 중" 정적 응답만 보내고 실답변은 1회용 `callbackUrl`로 1분 안에 전달(`waitUntil` + 45초 데드라인 가드). 활성화는 [DEPLOY.md](DEPLOY.md) C절
 8. 모든 질의를 `queries` 테이블에 로깅 (실패 시 `[오류]`로 기록)
 
 ### 어드민 (자료 관리)
@@ -94,16 +94,19 @@ kakao-bot/
 
 | 형식 | 처리 | 비고 |
 |---|---|---|
-| PDF | pdf-parse | 텍스트 기반. 스캔 이미지 PDF는 추출 실패 |
+| PDF | unpdf | 텍스트 기반. 스캔 이미지 PDF는 추출 실패 (pdf-parse는 Vercel Node에서 DOMMatrix 에러라 교체) |
 | PPTX | officeparser | 텍스트 기반. 이미지 위주 슬라이드는 약함 |
 | HWP | hwp.js | HWP 5.x. 구버전·이미지 기반 불가 |
 | TXT | 직접 읽기 | FAQ 형식(Q/A 빈 줄 구분) 권장 |
 | VTT | 자막 파서 | **긴 강의는 이걸 권장** (Zoom·YouTube 자동 자막) |
-| MP3·MP4 | Gemini Files API 전사 | ⚠️ **50MB 한도 + Vercel 타임아웃** — 아래 참고 |
+| MP3 | Gemini Files API 전사 | 오디오. ⚠️ 긴 파일은 전사 시간 ↑ |
+| ~~MP4(영상)~~ | **미지원** | 전사가 느려 함수 타임아웃 위험 → 자막(VTT)으로 |
 
-### ⚠️ 영상 처리 주의
-- **Supabase Storage 50MB 한도** → 1시간 강의 영상(수백 MB)은 업로드 불가
-- **Vercel 함수 타임아웃** (Hobby 10초 / Pro 60~300초) → 긴 전사는 실패
+### ⬆️ 업로드 방식 (큰 파일)
+업로드는 브라우저가 **서명 URL로 Supabase Storage에 직접** 올린다(`upload-zone.tsx` → `/admin/api/upload/sign`). Vercel 함수를 거치지 않아 **요청 본문 4.5MB 한계를 우회**, 버킷 한도인 **50MB까지** 받는다. 업로드가 끝나면 `/admin/api/upload`가 Storage에서 내려받아 추출·임베딩한다.
+
+### ⚠️ 영상은 미지원
+- 영상(MP4)은 받지 않는다 — 전사가 느려 함수 타임아웃 위험이 큼
 - **권장: 영상 대신 자막(VTT) 업로드.** Zoom·YouTube가 자동 생성, 1시간도 수백 KB라 즉시 처리됨
 
 ---

@@ -13,9 +13,11 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { createSupabaseBrowserClient } from '@/lib/supabase/client';
+import { STORAGE_BUCKET, MAX_UPLOAD_BYTES } from '@/lib/upload-meta';
 
 type Status = 'staged' | 'uploading' | 'done' | 'failed';
-type Stage = 'stored' | 'extract' | 'chunk' | 'embed' | 'save' | 'done';
+type Stage = 'upload' | 'extract' | 'chunk' | 'embed' | 'save' | 'done';
 
 interface Staged {
   file: File;
@@ -28,14 +30,14 @@ interface Staged {
 }
 
 const STAGE_LABEL: Record<Stage, string> = {
-  stored: '파일 저장',
+  upload: '직접 업로드',
   extract: '텍스트 추출',
   chunk: '문서 분할',
   embed: '임베딩 생성',
   save: '저장',
   done: '완료',
 };
-const STAGE_ORDER: Stage[] = ['stored', 'extract', 'chunk', 'embed', 'save'];
+const STAGE_ORDER: Stage[] = ['upload', 'extract', 'chunk', 'embed', 'save'];
 
 function fmt(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -43,7 +45,16 @@ function fmt(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-const MAX_BYTES = 50 * 1024 * 1024;
+// 파일 내용 해시(SHA-256) — 중복 검사용. 브라우저 Web Crypto로 계산.
+async function sha256Hex(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+const MAX_BYTES = MAX_UPLOAD_BYTES;
 
 export function UploadZone() {
   const router = useRouter();
@@ -79,19 +90,46 @@ export function UploadZone() {
   }
 
   async function uploadOne(idx: number) {
-    const target = staged[idx];
-    patch(idx, { status: 'uploading', stage: 'stored' });
-
-    const form = new FormData();
-    form.append('file', target.file);
+    const file = staged[idx].file;
+    patch(idx, { status: 'uploading', stage: 'upload' });
 
     try {
-      const res = await fetch('/admin/api/upload', { method: 'POST', body: form });
+      const sha256 = await sha256Hex(file);
+
+      // 1. 서명 URL 요청 (작은 JSON — 파일 본문 없음)
+      const signRes = await fetch('/admin/api/upload/sign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, size: file.size, sha256 }),
+      });
+      if (!signRes.ok) {
+        const data = await signRes.json().catch(() => ({}));
+        patch(idx, { status: 'failed', message: data.error ?? '업로드 준비 실패' });
+        return;
+      }
+      const { storagePath, token } = await signRes.json();
+
+      // 2. Supabase Storage로 직접 업로드 (Vercel 우회 → 4.5MB 한계 없음)
+      const supabase = createSupabaseBrowserClient();
+      const { error: upErr } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .uploadToSignedUrl(storagePath, token, file);
+      if (upErr) {
+        patch(idx, { status: 'failed', message: `업로드 실패: ${upErr.message}` });
+        return;
+      }
+
+      // 3. 처리 요청 (작은 JSON) → 서버가 Storage에서 내려받아 추출·임베딩
+      const res = await fetch('/admin/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storagePath, filename: file.name, sha256, size: file.size }),
+      });
 
       // 검증 단계 에러(409/400 등)는 JSON
       if (!res.body || res.headers.get('content-type')?.includes('application/json')) {
         const data = await res.json().catch(() => ({}));
-        patch(idx, { status: 'failed', message: data.error ?? '업로드 실패' });
+        patch(idx, { status: 'failed', message: data.error ?? '처리 실패' });
         return;
       }
 
@@ -164,9 +202,9 @@ export function UploadZone() {
           {isDragActive ? '여기에 놓으세요' : '파일을 끌어다 놓거나 클릭해서 선택'}
         </div>
         <div className="text-xs text-slate-400">
-          여러 개 선택 가능 · PDF · PPTX · HWP · TXT · VTT · MP3 · MP4 · 최대 50MB
+          여러 개 선택 가능 · PDF · PPTX · HWP · TXT · VTT · MP3 · 최대 50MB
           <br />
-          영상·오디오는 자동 전사되며 시간이 더 걸립니다
+          오디오(MP3)는 자동 전사되며 시간이 더 걸립니다 · 영상은 자막(VTT)으로 올려주세요
         </div>
       </div>
 

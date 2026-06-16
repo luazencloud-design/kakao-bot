@@ -160,53 +160,19 @@ async function rewriteQuery(question) {
 사용자 질문: ${question}
 
 검색어:`;
-    const result = (await generateRaw(prompt, 100)).trim().replace(/^검색어:\s*/, '');
+    // 1.2s 타임아웃 — 재작성은 검색어 보강용 보조 단계라, 느리면 원질문으로 즉시 폴백.
+    const result = (await generateRaw(prompt, 100, 1200)).trim().replace(/^검색어:\s*/, '');
     return result && result.length > 1 ? `${question} ${result}` : question;
   } catch {
     return question;
   }
 }
 
-// ---------- LLM rerank (top-N 후보 → top-K) ----------
-async function rerank(question, candidates, topK) {
-  if (candidates.length <= topK) return candidates;
-  try {
-    const list = candidates
-      .map((c, i) => `[${i}] (출처: ${c.source})\n${c.text.slice(0, 300)}`)
-      .join('\n\n');
-    const prompt = `질문에 답하는 데 가장 유용한 자료를 순서대로 고르세요.
-질문: ${question}
-
-자료 목록:
-${list}
-
-가장 관련 높은 자료 ${topK}개의 번호만 쉼표로 구분해 순서대로 출력하세요 (예: 2,0,5,1). 설명 없이 번호만.`;
-    const result = await generateRaw(prompt, 50);
-    const indices = (result.match(/\d+/g) || [])
-      .map(Number)
-      .filter((n) => n >= 0 && n < candidates.length);
-    if (indices.length === 0) return candidates.slice(0, topK);
-    const seen = new Set();
-    const ordered = [];
-    for (const idx of indices) {
-      if (!seen.has(idx)) {
-        seen.add(idx);
-        ordered.push(candidates[idx]);
-      }
-      if (ordered.length >= topK) break;
-    }
-    for (const c of candidates) {
-      if (ordered.length >= topK) break;
-      if (!ordered.includes(c)) ordered.push(c);
-    }
-    return ordered;
-  } catch {
-    return candidates.slice(0, topK);
-  }
-}
-
-// 시스템 프롬프트 없이 단순 생성 (재작성·재정렬용)
-async function generateRaw(prompt, maxTokens) {
+// 시스템 프롬프트 없이 단순 생성 (재작성용).
+// timeoutMs 지정 시 요청 단위 타임아웃(AbortSignal). 재작성이 Gemini 느린
+// 구간에 매달려 전체 응답을 지연시키지 않도록 캡을 건다 (초과 시 throw →
+// 호출부의 graceful fallback이 원질문을 그대로 사용).
+async function generateRaw(prompt, maxTokens, timeoutMs) {
   const apiKey = process.env.GEMINI_API_KEY;
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/` +
@@ -222,6 +188,7 @@ async function generateRaw(prompt, maxTokens) {
         thinkingConfig: { thinkingBudget: 0 },
       },
     }),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
   const data = await resp.json();
@@ -274,7 +241,6 @@ function logError({ userId, utterance, error, latencyMs }) {
 }
 
 // ---------- Main entry ----------
-const RETRIEVE_K = 12;
 
 export async function answerQuestion(question, opts = {}) {
   if (!question || question.trim().length === 0) {
@@ -291,18 +257,26 @@ export async function answerQuestion(question, opts = {}) {
 }
 
 async function answerQuestionInner(question, userId, t0) {
-  // 1) 쿼리 재작성 → 임베딩 → 하이브리드 검색 (넉넉히) → LLM 재정렬
-  const searchQuery = await rewriteQuery(question);
-  const qEmbed = await embedQuery(searchQuery);
-  const candidates = await searchTopK(qEmbed, searchQuery, RETRIEVE_K);
+  // 1) 재작성(키워드 보강)과 임베딩을 병렬 실행.
+  //    - 임베딩은 원질문 기준 — 의미 벡터가 깔끔하고, 재작성이 가끔 더하는
+  //      엉뚱한 키워드(예: "소명"→"사업자등록 소명") 노이즈를 배제한다.
+  //    - 재작성(searchQuery)은 sparse 키워드 검색어 보강용. 1.2s 타임아웃으로
+  //      임베딩 뒤에 숨겨 재작성 LLM 호출이 임계경로 latency를 늘리지 않게 한다.
+  const [searchQuery, qEmbed] = await Promise.all([
+    rewriteQuery(question),
+    embedQuery(question),
+  ]);
 
-  if (candidates.length === 0) {
+  // 2) 하이브리드 검색(RRF)에서 곧바로 top-K. 별도 LLM 재정렬 제거 —
+  //    Gemini 왕복 1회와 그 꼬리 지연(p95 기여)을 없앤다. RRF가 이미
+  //    dense+sparse를 융합 정렬하므로 상위 K개를 그대로 신뢰한다.
+  const top = await searchTopK(qEmbed, searchQuery, TOP_K);
+
+  if (top.length === 0) {
     const answer = '해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요.';
     logQuery({ userId, utterance: question, rewritten: searchQuery, chunks: [], answer, latencyMs: Date.now() - t0 });
     return answer;
   }
-
-  const top = await rerank(question, candidates, TOP_K);
 
   // Build the context block, labeling each chunk with its source.
   const context = top

@@ -1,97 +1,65 @@
-// POST /admin/api/upload  (multipart/form-data, field: "file")
-// 1. 파일을 Supabase Storage에 저장
-// 2. documents row 생성 (pending)
-// 3. processDocument 동기 실행 (추출→청킹→임베딩→ready)
+// POST /admin/api/upload  (JSON: { storagePath, filename, sha256, size })
+// 서명 URL로 Storage에 "직접 업로드"가 끝난 파일을 처리하는 단계.
+//   1. documents row 생성 (pending)
+//   2. processDocument 실행 — buffer 없이 호출하면 storage_path에서 다운로드해
+//      추출→청킹→임베딩→ready 까지 진행 (NDJSON 진행 이벤트 스트리밍)
 //
-// 주의: 현재는 요청 내에서 동기 처리. 대용량/영상은 Task 7에서 큐로 분리 예정.
+// 파일 자체는 이 요청 본문에 없으므로 Vercel 4.5MB 한계를 받지 않는다.
+// (서버가 Supabase에서 내려받는 방향엔 그 한계가 없음.)
 
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'node:crypto';
 import { requireAdmin } from '@/lib/auth-guard';
 import { createServiceClient } from '@/lib/supabase/server';
 import { processDocument, inferCategory } from '@/lib/ingest/process';
-import { safeStoragePath } from '@/lib/storage';
+import { STORAGE_BUCKET, isSupportedFile, mimeFromExt } from '@/lib/upload-meta';
 
-// Vercel: Hobby는 10초로 캡됨(문서는 배치 임베딩으로 보통 통과),
-// Pro는 60초(기본)~300초. 미디어 전사하려면 Pro 필요.
+// Hobby 기본 10초(문서는 배치 임베딩으로 보통 통과), Pro 60~300초.
 export const maxDuration = 300;
 export const runtime = 'nodejs';
-
-const MAX_BYTES = 50 * 1024 * 1024; // 50MB (Supabase Storage 무료 한도)
-
-function mimeFromExt(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase();
-  return (
-    {
-      pdf: 'application/pdf',
-      txt: 'text/plain',
-      vtt: 'text/vtt',
-      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      hwp: 'application/x-hwp',
-      mp3: 'audio/mpeg',
-      mp4: 'video/mp4',
-    }[ext ?? ''] ?? 'application/octet-stream'
-  );
-}
 
 export async function POST(request: NextRequest) {
   const user = await requireAdmin();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
-  const form = await request.formData();
-  const file = form.get('file');
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: '파일이 없습니다.' }, { status: 400 });
+  const body = await request.json().catch(() => null);
+  const storagePath = typeof body?.storagePath === 'string' ? body.storagePath : '';
+  const filename = typeof body?.filename === 'string' ? body.filename : '';
+  const sha256 = typeof body?.sha256 === 'string' ? body.sha256 : null;
+  const size = typeof body?.size === 'number' ? body.size : null;
+
+  if (!storagePath || !filename) {
+    return NextResponse.json({ error: '잘못된 요청입니다.' }, { status: 400 });
   }
-  if (file.size > MAX_BYTES) {
-    return NextResponse.json(
-      { error: '파일이 너무 큽니다 (최대 50MB).' },
-      { status: 400 },
-    );
+  if (!isSupportedFile(filename)) {
+    return NextResponse.json({ error: '지원하지 않는 형식입니다.' }, { status: 400 });
   }
 
-  const filename = file.name;
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
   const admin = createServiceClient();
 
-  // 중복 검사 (같은 내용)
-  const { data: dup } = await admin
-    .from('documents')
-    .select('id, filename')
-    .eq('sha256', sha256)
-    .maybeSingle();
-  if (dup) {
-    return NextResponse.json(
-      { error: `이미 동일한 파일이 있습니다: ${dup.filename}` },
-      { status: 409 },
-    );
+  // 중복 재확인 (서명~처리 사이 경합 방지)
+  if (sha256) {
+    const { data: dup } = await admin
+      .from('documents')
+      .select('id, filename')
+      .eq('sha256', sha256)
+      .maybeSingle();
+    if (dup) {
+      await admin.storage.from(STORAGE_BUCKET).remove([storagePath]);
+      return NextResponse.json(
+        { error: `이미 동일한 파일이 있습니다: ${dup.filename}` },
+        { status: 409 },
+      );
+    }
   }
 
-  // 1. Storage 업로드 — 원본 파일명은 documents.filename에 보존,
-  // storage 키는 UUID+확장자로 안전하게 (safeStoragePath, 한글 키 버그 방지)
-  const storagePath = safeStoragePath(filename);
-  const { error: upErr } = await admin.storage
-    .from('source-files')
-    .upload(storagePath, buffer, {
-      contentType: mimeFromExt(filename),
-      upsert: false,
-    });
-  if (upErr) {
-    return NextResponse.json(
-      { error: `업로드 실패: ${upErr.message}` },
-      { status: 500 },
-    );
-  }
-
-  // 2. documents row 생성
+  // documents row 생성
   const { data: doc, error: insErr } = await admin
     .from('documents')
     .insert({
       filename,
       mime_type: mimeFromExt(filename),
       storage_path: storagePath,
-      size_bytes: buffer.byteLength,
+      size_bytes: size,
       sha256,
       category: inferCategory(filename),
       status: 'pending',
@@ -100,26 +68,23 @@ export async function POST(request: NextRequest) {
     .select('id')
     .single();
   if (insErr || !doc) {
-    await admin.storage.from('source-files').remove([storagePath]);
+    await admin.storage.from(STORAGE_BUCKET).remove([storagePath]);
     return NextResponse.json(
       { error: `문서 생성 실패: ${insErr?.message}` },
       { status: 500 },
     );
   }
 
-  // 3. 처리 — NDJSON 스트리밍 (단계별 진행 이벤트를 클라이언트로 푸시)
+  // 처리 — NDJSON 스트리밍 (단계별 진행 이벤트). buffer 미전달 →
+  // processDocument가 storage_path에서 직접 다운로드해 추출.
   const docId = doc.id;
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       const send = (obj: unknown) =>
         controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
-
-      send({ stage: 'stored' }); // Storage 업로드·문서 생성 완료
       try {
         const { chunkCount } = await processDocument(docId, {
-          buffer,
-          filename,
           onProgress: (e) => send(e),
         });
         send({ stage: 'complete', ok: true, id: docId, chunkCount });

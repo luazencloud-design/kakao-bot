@@ -24,10 +24,8 @@ interface Result {
   chunks: Chunk[];
   rewrittenQuery: string;
   timings: {
-    rewrite: number;
-    embed: number;
+    prep: number;
     search: number;
-    rerank: number;
     generate: number;
     total: number;
   };
@@ -141,20 +139,18 @@ export default function TestPage() {
             </div>
             <div className="space-y-2 text-sm">
               <Step
-                label="질문 재작성"
-                ms={result.timings.rewrite}
+                label="재작성 + 임베딩 (병렬)"
+                ms={result.timings.prep}
                 detail={
                   result.rewrittenQuery && result.rewrittenQuery.length > 0
                     ? `"${result.rewrittenQuery.slice(0, 50)}${result.rewrittenQuery.length > 50 ? '…' : ''}"`
                     : undefined
                 }
               />
-              <Step label="질문 임베딩" ms={result.timings.embed} />
-              <Step label="하이브리드 검색 (dense + 트라이그램)" ms={result.timings.search} />
               <Step
-                label="LLM 재정렬"
-                ms={result.timings.rerank}
-                detail={`상위 ${result.chunks.length}개 선정`}
+                label="하이브리드 검색 (dense + 트라이그램)"
+                ms={result.timings.search}
+                detail={`상위 ${result.chunks.length}개`}
               />
               <Step label="답변 생성 (Gemini)" ms={result.timings.generate} />
             </div>

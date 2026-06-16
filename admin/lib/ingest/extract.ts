@@ -1,9 +1,10 @@
 // 파일 버퍼 → 텍스트 추출. 포맷별 어댑터.
 //
-// 지원: .txt, .vtt, .pdf, .pptx, .hwp, .mp3, .m4a, .mp4
+// 지원: .txt, .vtt, .pdf, .pptx, .hwp, .mp3, .m4a
 //   .pptx → officeparser (텍스트 직접 추출)
 //   .hwp  → hwp.js (HWP 5.x 텍스트 레이어)
-//   .mp3/.m4a/.mp4 → Gemini Files API 전사
+//   .mp3/.m4a → Gemini Files API 전사
+//   영상(.mp4)은 미지원 — 전사가 느려 함수 타임아웃 위험. 자막(VTT) 권장.
 
 import { transcribeMedia } from './gemini-files';
 
@@ -79,11 +80,6 @@ export async function extractText(
     case 'm4a': {
       const mime = ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
       const text = await transcribeMedia(buffer, mime, filename);
-      return { text };
-    }
-
-    case 'mp4': {
-      const text = await transcribeMedia(buffer, 'video/mp4', filename);
       return { text };
     }
 

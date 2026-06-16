@@ -3,7 +3,11 @@
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 
-async function callGemini(prompt: string, maxTokens = 256): Promise<string> {
+async function callGemini(
+  prompt: string,
+  maxTokens = 256,
+  timeoutMs?: number,
+): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY 누락');
   const url =
@@ -20,6 +24,7 @@ async function callGemini(prompt: string, maxTokens = 256): Promise<string> {
         thinkingConfig: { thinkingBudget: 0 },
       },
     }),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
   const data = await resp.json();
@@ -37,7 +42,8 @@ export async function rewriteQuery(question: string): Promise<string> {
 사용자 질문: ${question}
 
 검색어:`;
-    const result = (await callGemini(prompt, 100)).trim().replace(/^검색어:\s*/, '');
+    // 1.2s 타임아웃 — 재작성은 검색어 보강용 보조 단계라, 느리면 원문으로 즉시 폴백.
+    const result = (await callGemini(prompt, 100, 1200)).trim().replace(/^검색어:\s*/, '');
     // 원문 + 재작성을 합쳐서 둘 다 반영
     return result && result.length > 1 ? `${question} ${result}` : question;
   } catch {
