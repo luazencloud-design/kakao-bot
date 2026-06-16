@@ -1,5 +1,7 @@
-// RAG 품질 개선 모듈: 쿼리 재작성 + LLM 재정렬(reranking).
+// RAG 품질 개선 모듈: 쿼리 재작성(캐시) + LLM 재정렬(reranking).
 // 외부 서비스(Cohere 등) 없이 Gemini Flash Lite만으로 구현.
+
+import { createServiceClient } from '@/lib/supabase/server';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 
@@ -31,9 +33,34 @@ async function callGemini(
   return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 }
 
+function normalizeQuestion(q: string): string {
+  return q.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?!.]+$/, '');
+}
+
 // 쿼리 재작성: 구어체·축약 질문을 검색용 키워드로 확장.
-// 실패해도 원문 사용 (graceful degradation).
+// query_rewrites 캐시로 같은 질문은 같은 재작성을 재사용 → 결정적. 봇(src/rag.js)과
+// 같은 테이블·같은 프롬프트를 공유하므로 어드민 테스트와 봇 답이 일치한다.
+// REWRITE=off 면 건너뜀. 실패해도 원문 사용 (graceful degradation).
 export async function rewriteQuery(question: string): Promise<string> {
+  if (process.env.REWRITE === 'off') return question;
+  const key = normalizeQuestion(question);
+  const apply = (kw: string) => (kw ? `${question} ${kw}` : question);
+  const admin = createServiceClient();
+
+  // 1) 캐시 조회
+  try {
+    const { data } = await admin
+      .from('query_rewrites')
+      .select('rewrite')
+      .eq('q_norm', key)
+      .maybeSingle();
+    if (data) return apply((data as { rewrite: string | null }).rewrite ?? '');
+  } catch {
+    /* 캐시 조회 실패 — 직접 재작성 */
+  }
+
+  // 2) 캐시 미스 → Gemini 재작성 (1.2s 타임아웃, 실패 시 '' = 재작성 없음)
+  let keywords = '';
   try {
     const prompt = `다음은 사업자등록·오픈마켓 가입·강의 안내 챗봇에 들어온 사용자 질문입니다.
 이 질문을 문서 검색에 적합하도록 핵심 키워드 중심으로 한 줄로 재작성하세요.
@@ -42,13 +69,21 @@ export async function rewriteQuery(question: string): Promise<string> {
 사용자 질문: ${question}
 
 검색어:`;
-    // 1.2s 타임아웃 — 재작성은 검색어 보강용 보조 단계라, 느리면 원문으로 즉시 폴백.
     const result = (await callGemini(prompt, 100, 1200)).trim().replace(/^검색어:\s*/, '');
-    // 원문 + 재작성을 합쳐서 둘 다 반영
-    return result && result.length > 1 ? `${question} ${result}` : question;
+    if (result && result.length > 1) keywords = result;
   } catch {
-    return question;
+    keywords = '';
   }
+
+  // 3) 캐시에 저장 (빈 문자열도 저장해 "재작성 없음" 고정). 실패는 무시.
+  try {
+    await admin
+      .from('query_rewrites')
+      .upsert({ q_norm: key, rewrite: keywords }, { onConflict: 'q_norm' });
+  } catch {
+    /* 저장 실패 무시 */
+  }
+  return apply(keywords);
 }
 
 export interface RerankCandidate {
