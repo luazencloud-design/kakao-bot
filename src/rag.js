@@ -10,7 +10,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
-const TOP_K = parseInt(process.env.TOP_K || '4', 10);
+const TOP_K = parseInt(process.env.TOP_K || '6', 10);
 
 // ---------- Supabase 클라이언트 (lazy) ----------
 // 모듈 로드 시점에 createClient를 호출하면, 환경변수가 없을 때
@@ -102,7 +102,9 @@ async function generateWithGemini(systemPrompt, userQuestion) {
     ],
     generationConfig: {
       maxOutputTokens: 2048,
-      temperature: 0.3,
+      // temperature 0 — 같은 질문·같은 자료에 같은 답이 나오도록(결정성).
+      // 0.3이면 경계 질문에서 "없음↔답함"이 매 호출 갈려 일관성이 깨졌음.
+      temperature: 0,
       thinkingConfig: {
         thinkingBudget: 0,
       },
@@ -150,8 +152,36 @@ async function generateWithGemini(systemPrompt, userQuestion) {
   throw new Error(`generateWithGemini: exhausted retries. Last error: ${lastErr}`);
 }
 
-// ---------- Query rewriting (Gemini, graceful fallback) ----------
+// ---------- Query rewriting (Gemini, 캐시로 결정적) ----------
+// 재작성은 Gemini 호출이라 temperature 0에도 결과가 매번 달라질 수 있어
+// (변형 A "…사업자등록…" ↔ 변형 B "…소명자료, 소명서…"), 그게 sparse 검색어를
+// 바꿔 같은 질문에 다른 자료를 끌어와 답이 흔들리는 비결정의 원인이었다.
+// → 정규화 질문을 키로 재작성 결과를 query_rewrites 테이블에 캐시.
+//   같은 질문은 저장된 재작성을 재사용 → 결정적. 봇·어드민이 캐시를 공유하므로
+//   둘의 답도 일치한다. REWRITE=off 면 재작성을 건너뛰고 원질문을 그대로 쓴다.
+function normalizeQuestion(q) {
+  return q.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?!.]+$/, '');
+}
+
 async function rewriteQuery(question) {
+  if (process.env.REWRITE === 'off') return question;
+  const key = normalizeQuestion(question);
+  const apply = (kw) => (kw ? `${question} ${kw}` : question);
+
+  // 1) 캐시 조회 (히트 시 결정적으로 같은 검색어 재사용; ''는 "재작성 없음" 고정)
+  try {
+    const { data } = await getSupabase()
+      .from('query_rewrites')
+      .select('rewrite')
+      .eq('q_norm', key)
+      .maybeSingle();
+    if (data) return apply(data.rewrite ?? '');
+  } catch {
+    /* 캐시 조회 실패 — 아래에서 직접 재작성 */
+  }
+
+  // 2) 캐시 미스 → Gemini 재작성 (1.2s 타임아웃, 실패 시 '' = 재작성 없음)
+  let keywords = '';
   try {
     const prompt = `다음은 사업자등록·오픈마켓 가입·강의 안내 챗봇에 들어온 사용자 질문입니다.
 이 질문을 문서 검색에 적합하도록 핵심 키워드 중심으로 한 줄로 재작성하세요.
@@ -160,12 +190,21 @@ async function rewriteQuery(question) {
 사용자 질문: ${question}
 
 검색어:`;
-    // 1.2s 타임아웃 — 재작성은 검색어 보강용 보조 단계라, 느리면 원질문으로 즉시 폴백.
     const result = (await generateRaw(prompt, 100, 1200)).trim().replace(/^검색어:\s*/, '');
-    return result && result.length > 1 ? `${question} ${result}` : question;
+    if (result && result.length > 1) keywords = result;
   } catch {
-    return question;
+    keywords = '';
   }
+
+  // 3) 캐시에 저장 (빈 문자열도 저장해 "재작성 없음"을 고정). 실패는 무시.
+  try {
+    await getSupabase()
+      .from('query_rewrites')
+      .upsert({ q_norm: key, rewrite: keywords }, { onConflict: 'q_norm' });
+  } catch {
+    /* 저장 실패 — 다음 요청에서 재시도 */
+  }
+  return apply(keywords);
 }
 
 // 시스템 프롬프트 없이 단순 생성 (재작성용).
@@ -291,6 +330,7 @@ async function answerQuestionInner(question, userId, t0) {
 
 규칙:
 1. 반드시 아래 [참고 자료]에 있는 내용만 근거로 답변하세요. 자료에 없는 내용은 절대 추측하거나 일반 상식으로 보충하지 마세요.
+   특히 전화번호·사이트명(예: 홈택스/정부24)·매장명·메뉴 경로·구체 수치(금액·기간·개수·시간)는 [참고 자료]에 그대로 적혀 있는 것만 쓰세요. 자료에 없는 구체값은 지어내지 말고 그 부분은 생략하세요.
 2. 자료에 답이 없으면 "해당 정보는 제공된 자료에 포함되어 있지 않습니다. 담당자에게 문의해 주세요."라고 답하세요.
 3. 답변은 친절하고 간결하게, 본문은 600자 내외로 작성하세요. 여러 항목은 번호 목록으로 정리하세요.
 4. 답변 본문 다음에 빈 줄을 하나 두고, 마지막 줄에 "📚 출처: <파일명>" 형식으로 실제로 참고한 자료의 파일명을 명시하세요. 여러 자료를 참고했다면 쉼표로 구분하세요. 자료에 답이 없어 모른다고 답한 경우에는 출처 줄을 생략하세요.
