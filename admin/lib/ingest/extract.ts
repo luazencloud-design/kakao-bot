@@ -31,7 +31,7 @@ export async function extractText(
       const pdf = await getDocumentProxy(new Uint8Array(buffer));
       const { text: raw } = await pdfExtract(pdf, { mergePages: true });
       const text = typeof raw === 'string' ? raw : (raw as string[]).join('\n');
-      if (text.trim().length < 50) {
+      if (text.trim().length < 10) {
         throw new Error(
           '텍스트가 거의 추출되지 않았습니다. 스캔된 이미지 PDF로 보입니다.',
         );
@@ -43,7 +43,7 @@ export async function extractText(
       const { parseOffice } = await import('officeparser');
       const ast = await parseOffice(buffer);
       const text = typeof ast?.toText === 'function' ? ast.toText() : String(ast ?? '');
-      if (text.trim().length < 30) {
+      if (text.trim().length < 10) {
         throw new Error(
           '텍스트가 거의 추출되지 않았습니다. 이미지 위주 슬라이드로 보입니다.',
         );
@@ -70,7 +70,7 @@ export async function extractText(
         }
       }
       const text = lines.join('\n');
-      if (text.trim().length < 30) {
+      if (text.trim().length < 10) {
         throw new Error('HWP에서 텍스트를 추출하지 못했습니다 (이미지 기반이거나 구버전 형식).');
       }
       return { text };
