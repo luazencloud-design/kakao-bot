@@ -13,6 +13,8 @@ import {
   Trash2,
   RefreshCw,
   ChevronDown,
+  Search,
+  X,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -61,12 +63,28 @@ function StatusBadge({ status }: { status: string }) {
 
 const CATEGORIES = ['오픈마켓가입', '사업자등록', '강의자료', '도구가이드', '기타'];
 
+const SORT_LABELS: Record<string, string> = {
+  newest: '최신순',
+  oldest: '오래된순',
+  name: '이름순',
+  size: '크기 큰순',
+  chunks: '청크 많은순',
+};
+
+function extOf(filename: string): string {
+  return filename.includes('.') ? (filename.split('.').pop()?.toLowerCase() ?? '') : '';
+}
+
 export function FileList({ documents }: { documents: DocumentRow[] }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   // 낙관적 UI: 상태/카테고리 즉시 반영, 삭제는 즉시 숨김
   const [overrides, setOverrides] = useState<Record<string, Partial<DocumentRow>>>({});
   const [removed, setRemoved] = useState<Set<string>>(new Set());
+  // 검색·형식필터·정렬 (클라이언트)
+  const [query, setQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [sort, setSort] = useState<string>('newest');
 
   function patch(id: string, p: Partial<DocumentRow>) {
     setOverrides((o) => ({ ...o, [id]: { ...o[id], ...p } }));
@@ -136,6 +154,32 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
     .filter((d) => !removed.has(d.id))
     .map((d) => ({ ...d, ...overrides[d.id] }));
 
+  // 형식 필터 목록은 현재 파일들에서 추출 (존재하는 형식만 노출)
+  const types = Array.from(
+    new Set(visible.map((d) => extOf(d.filename)).filter(Boolean)),
+  ).sort();
+
+  // 검색 → 형식 필터 → 정렬
+  const q = query.trim().toLowerCase();
+  const displayed = visible
+    .filter((d) => !q || d.filename.toLowerCase().includes(q))
+    .filter((d) => typeFilter === 'all' || extOf(d.filename) === typeFilter)
+    .sort((a, b) => {
+      switch (sort) {
+        case 'oldest':
+          return (a.created_at ?? '').localeCompare(b.created_at ?? '');
+        case 'name':
+          return a.filename.localeCompare(b.filename, 'ko');
+        case 'size':
+          return (b.size_bytes ?? 0) - (a.size_bytes ?? 0);
+        case 'chunks':
+          return (b.chunk_count ?? 0) - (a.chunk_count ?? 0);
+        default: // newest
+          return (b.created_at ?? '').localeCompare(a.created_at ?? '');
+      }
+    });
+  const isFiltered = q !== '' || typeFilter !== 'all';
+
   if (visible.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-sm text-slate-500">
@@ -145,16 +189,90 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
   }
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 text-xs font-medium text-slate-500 grid grid-cols-12 gap-3">
-        <div className="col-span-6 md:col-span-5">파일</div>
-        <div className="col-span-3 md:col-span-2 hidden md:block">카테고리</div>
-        <div className="col-span-2 hidden md:block">청크</div>
-        <div className="col-span-3 md:col-span-2">상태</div>
-        <div className="col-span-3 md:col-span-1 text-right">작업</div>
+    <div className="space-y-3">
+      {/* 검색 · 형식 필터 · 정렬 */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="파일명 검색..."
+            className="w-full pl-9 pr-8 py-2 text-sm rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label="검색어 지우기"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger className="px-3 py-2 text-sm rounded-lg border border-slate-200 inline-flex items-center justify-between gap-1.5 text-slate-700 hover:bg-slate-50 whitespace-nowrap sm:min-w-[6.5rem]">
+            형식: {typeFilter === 'all' ? '전체' : typeFilter.toUpperCase()}
+            <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => setTypeFilter('all')}
+              className={typeFilter === 'all' ? 'font-semibold text-blue-600' : ''}
+            >
+              전체
+            </DropdownMenuItem>
+            {types.map((t) => (
+              <DropdownMenuItem
+                key={t}
+                onClick={() => setTypeFilter(t)}
+                className={typeFilter === t ? 'font-semibold text-blue-600' : ''}
+              >
+                {t.toUpperCase()}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger className="px-3 py-2 text-sm rounded-lg border border-slate-200 inline-flex items-center justify-between gap-1.5 text-slate-700 hover:bg-slate-50 whitespace-nowrap sm:min-w-[7.5rem]">
+            {SORT_LABELS[sort]}
+            <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {Object.entries(SORT_LABELS).map(([k, label]) => (
+              <DropdownMenuItem
+                key={k}
+                onClick={() => setSort(k)}
+                className={sort === k ? 'font-semibold text-blue-600' : ''}
+              >
+                {label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      {visible.map((doc) => (
+      <div className="px-1 text-xs text-slate-500">
+        {displayed.length}개{isFiltered ? ` · 전체 ${visible.length}개 중` : ''}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 text-xs font-medium text-slate-500 grid grid-cols-12 gap-3">
+          <div className="col-span-6 md:col-span-5">파일</div>
+          <div className="col-span-3 md:col-span-2 hidden md:block">카테고리</div>
+          <div className="col-span-2 hidden md:block">청크</div>
+          <div className="col-span-3 md:col-span-2">상태</div>
+          <div className="col-span-3 md:col-span-1 text-right">작업</div>
+        </div>
+
+        {displayed.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-slate-500">
+            검색 결과가 없습니다.
+          </div>
+        ) : (
+          displayed.map((doc) => (
         <div
           key={doc.id}
           className={`px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 grid grid-cols-12 gap-3 items-center ${
@@ -238,7 +356,9 @@ export function FileList({ documents }: { documents: DocumentRow[] }) {
             </DropdownMenu>
           </div>
         </div>
-      ))}
+          ))
+        )}
+      </div>
     </div>
   );
 }
