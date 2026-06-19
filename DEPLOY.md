@@ -27,9 +27,13 @@
 | `GEMINI_API_KEY` | `AIza…` (이미 있을 것) |
 | `GEMINI_MODEL` | `gemini-flash-lite-latest` |
 | `EMBED_MODEL` | `gemini-embedding-001` |
-| `TOP_K` | `4` |
+| `TOP_K` | `6` (완결성↑. 일관성과는 무관) |
 | `SUPABASE_URL` | `https://szkj….supabase.co` ← **추가** |
 | `SUPABASE_SERVICE_ROLE_KEY` | `eyJ…` (service_role) ← **추가** |
+| `WEBHOOK_SECRET` | (선택) 웹훅 시크릿 경로 — 보안 절 참고 |
+| `REWRITE` | (선택) `off`면 재작성 끔. 보통 비워둠 |
+
+> 어드민 프로젝트 env도 동일하게 `TOP_K=6` 권장. (어드민은 `NEXT_PUBLIC_` 접두사 변수 추가 — README 환경변수 참고)
 
 ### 2. 새 코드 배포
 - `feat/supabase-admin` → main 머지하거나

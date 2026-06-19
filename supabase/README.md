@@ -11,13 +11,27 @@
    - **Plan**: Free (시작용)
 4. 프로젝트 생성 완료까지 약 2분 대기
 
-## 2. 스키마 적용
+## 2. 스키마 적용 (마이그레이션 0001~0005, 순서대로)
 
-1. 좌측 사이드바 **SQL Editor** 클릭
-2. **+ New query**
-3. [`migrations/0001_init.sql`](migrations/0001_init.sql) 내용을 통째로 복사 → 붙여넣기
-4. **Run** (또는 `Ctrl+Enter`)
-5. 성공 메시지 확인 (`Success. No rows returned`)
+`migrations/` 폴더의 SQL을 **번호 순서대로 전부** 적용한다.
+
+**방법 A — Supabase CLI (권장):**
+```bash
+supabase link --project-ref <ref>
+supabase db push
+```
+
+**방법 B — 대시보드 SQL Editor (수동):**
+1. 좌측 **SQL Editor** → **+ New query**
+2. 아래를 **순서대로** 각각 복사→붙여넣기→**Run**:
+   - [`0001_init.sql`](migrations/0001_init.sql) — 테이블·인덱스·GRANT·RLS·`hybrid_search`
+   - [`0002_hybrid_search_korean.sql`](migrations/0002_hybrid_search_korean.sql) — sparse를 pg_trgm(한국어)로
+   - [`0003_queries_resolved_at.sql`](migrations/0003_queries_resolved_at.sql) — 피드백 해결 컬럼
+   - [`0004_hybrid_search_deterministic.sql`](migrations/0004_hybrid_search_deterministic.sql) — RRF 동점 id 정렬(검색 결정성)
+   - [`0005_query_rewrites_cache.sql`](migrations/0005_query_rewrites_cache.sql) — 재작성 캐시 테이블
+3. 각 단계 `Success` 확인
+
+> 결과: `documents`·`chunks`·`queries`·`sessions`·`allowed_admins`·`query_rewrites` 테이블 + `hybrid_search` 함수 + GRANT/RLS가 만들어진다.
 
 ## 3. Storage 버킷 생성
 
@@ -63,22 +77,17 @@ using (
 );
 ```
 
-## 4. 인증 (매직 링크) 설정
+## 4. 인증 (비밀번호 방식)
 
-1. 좌측 **Authentication** → **Providers**
-2. **Email** 켜져 있는지 확인
-3. **Confirm email** 끄기 (매직 링크가 곧 인증이므로)
-4. **Authentication** → **Email Templates** → **Magic Link**
-   - 한국어 이메일로 수정 (선택):
-     ```html
-     <h2>카카오봇 관리자 로그인</h2>
-     <p>아래 링크를 클릭하시면 로그인됩니다.</p>
-     <p><a href="{{ .ConfirmationURL }}">로그인하기</a></p>
-     <p>이 링크는 1시간 동안 유효합니다.</p>
-     ```
-5. **Authentication** → **URL Configuration**
-   - **Site URL**: 어드민 도메인 (예: `https://admin.kakao-bot.fly.dev`)
-   - **Redirect URLs**: 같은 도메인 또는 로컬 개발용 `http://localhost:3000/**` 추가
+> 초기엔 매직 링크를 썼으나, 무료 티어 이메일 제한·일회용 토큰·RLS 문제로 **비밀번호 방식**으로 전환했다.
+
+1. 좌측 **Authentication** → **Providers** → **Email** 켜기
+2. **Confirm email**은 운영 편의상 꺼도 됨(어드민은 화이트리스트로 한 번 더 막힘)
+3. **Authentication** → **Users** → **Add user**로 운영자 이메일+비밀번호 생성
+   (또는 첫 로그인 흐름에서 비밀번호 설정. 비밀번호 변경은 어드민 **설정** 페이지에서 가능)
+4. **Authentication** → **URL Configuration**
+   - **Site URL**: 어드민 Vercel 도메인
+   - **Redirect URLs**: 위 도메인 `/**` + 로컬용 `http://localhost:3000/**`
 
 ## 5. 어드민 화이트리스트 등록
 
