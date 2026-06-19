@@ -14,7 +14,10 @@
 | 봇 호스팅 | Fly.io | **Vercel** (`naver-bot-one`) — Supabase로 stateless화 + `waitUntil`로 콜백 해결 |
 | 어드민 호스팅 | Fly.io | **Vercel** (`kakao-bot-admin`) — 영상은 자막 우회로 긴 작업 회피, 배치 임베딩으로 타임아웃 회피 |
 | 한국어 검색 | tsvector(BM25) | **pg_trgm word_similarity** (tsvector가 한국어 토큰화 못 함) |
-| Reranker | Cohere | **Gemini LLM 재정렬** (외부 서비스 추가 없이) |
+| Reranker | Cohere | **재정렬 제거** — latency·결정성 위해 LLM 재정렬을 빼고 RRF 상위 K개 직접 사용 |
+| 검색 일관성 | (미고려) | **재작성 캐시(`query_rewrites`) + RRF 동점 id 정렬 + 생성 temp 0** → 같은 질문 같은 답 |
+| 교차언어 | (미고려) | 재작성이 **영어 키워드도 추가** → 영어 데이터 PDF를 한국어 질문으로 검색 |
+| 업로드 | 단일 POST | **서명 URL 직접 업로드**(Vercel 4.5MB 한계 우회, 버킷 50MB) → 처리 단계 분리 |
 | 인증 | 매직링크 | **비밀번호** (이메일 rate limit·일회용 토큰 문제로 전환) |
 | 세션·관측성·보안 | 설계됨 | **시크릿경로·rate limit·입력가드 구현**(`src/security.js`), 질의/에러 로깅 구현. Langfuse 등 관측 플랫폼은 미적용 |
 | 카카오 콜백 윈도 | "30초" 가정 | **1분(60초)** — 공식 `callbackUrl valid time: 1min`, 1회용 (`maxDuration:60`으로 정렬) |
