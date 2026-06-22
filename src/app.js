@@ -36,6 +36,13 @@ function withDeadline(promise, ms, label) {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
+// "빠른 응답 우선" 예산. 콜백이 켜진 경우, 이 시간 안에 답이 나오면 동기로 바로
+// 보내(대기 풍선 없음), 넘으면 그때 "생성 중"을 보내고 나머지는 callbackUrl로
+// 비동기 전달한다. 5초 SLA 안에 응답이 나가야 하므로 보수적으로 잡는다.
+// (콜드스타트가 부팅 시간을 먹으므로 keep-warm을 켜두면 더 안정적. 풍선이 너무
+//  자주 뜨면 이 값을 낮추고, 거의 안 뜨면 살짝 올려도 됨.)
+const SYNC_BUDGET_MS = 3500;
+
 // 웹훅 공통 가드: 시크릿 경로 검증 → rate limit → 입력 검증.
 // 통과 못 하면 사용자에게 보일 simpleText 응답을 돌려주고 false 반환.
 function guard(req, res) {
@@ -88,12 +95,12 @@ async function handleSync(req, res) {
   }
 }
 
-// ---------- Callback skill (>5s) ----------
-// Requires "useCallback" to be enabled in OpenBuilder bot settings.
-// Vercel 서버리스에서 res.json() 이후 백그라운드 작업이 suspend되는 문제를
-// `@vercel/functions`의 waitUntil로 해결 — 함수 수명을 백그라운드 작업이
-// 끝날 때까지 연장. 장수명 호스트(로컬·Fly.io)에선 waitUntil이 no-op이거나
-// 예외라도 promise 자체는 그대로 실행되므로 try/catch로 감싼다.
+// ---------- Callback skill (빠른 응답 우선 + >5s 콜백) ----------
+// 콜백이 켜져 있어도 빠른 답엔 대기 풍선 없이 바로 응답한다:
+//   - SYNC_BUDGET 안에 답 완료  → 동기로 바로 답 (풍선 없음)
+//   - 예산 초과(콜드/긴 답/Gemini 지연) → "생성 중" 보내고 callbackUrl로 1분 내 전달
+// callbackUrl이 없으면(콜백 미설정) 동기로만 동작.
+// Vercel에서 res.json() 이후 백그라운드 작업이 suspend되는 문제는 waitUntil로 해결.
 async function handleCallback(req, res) {
   const g = guard(req, res);
   if (!g) return;
@@ -102,37 +109,49 @@ async function handleCallback(req, res) {
   console.log(`[callback] Q: ${question}`);
   console.log(`[callback] callbackUrl: ${callbackUrl ? 'yes' : 'no'}`);
 
+  // 답변 생성은 딱 한 번만 시작하고(중복 호출 금지), 절대 reject하지 않게 감싼다.
+  const answerPromise = answerQuestion(question, { userId })
+    .then((answer) => ({ ok: true, answer }))
+    .catch((error) => ({ ok: false, error }));
+
+  // callbackUrl 없음 → 콜백 불가, 동기로만 (기존 폴백 동작)
   if (!callbackUrl) {
-    try {
-      const answer = await answerQuestion(question, { userId });
-      return res.json(simpleText(answer));
-    } catch (err) {
-      console.error('[callback] sync-fallback error:', err);
-      return res.json(simpleText('죄송합니다. 일시적인 오류가 발생했습니다.'));
-    }
+    const r = await answerPromise;
+    if (!r.ok) console.error('[callback] sync-fallback error:', r.error);
+    return res.json(simpleText(r.ok ? r.answer : '죄송합니다. 일시적인 오류가 발생했습니다.'));
   }
 
+  // 빠른 응답 우선 — 예산 안에 끝나면 동기로 바로
+  let timer;
+  const budget = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('__budget__'), SYNC_BUDGET_MS);
+  });
+  const winner = await Promise.race([answerPromise, budget]);
+  clearTimeout(timer);
+
+  if (winner !== '__budget__') {
+    // 예산 안에 완료 → 대기 풍선 없이 바로 답
+    if (!winner.ok) console.error('[callback] fast-path error:', winner.error);
+    console.log(`[callback] fast(<${SYNC_BUDGET_MS}ms) → 동기 응답`);
+    return res.json(simpleText(winner.ok ? winner.answer : '죄송합니다. 일시적인 오류가 발생했습니다.'));
+  }
+
+  // 예산 초과 → "생성 중" 보내고 나머지는 callbackUrl로 비동기 전달
+  console.log('[callback] slow → useCallback + 비동기 전달');
   res.json(useCallbackResponse('답변을 생성하고 있습니다. 잠시만 기다려 주세요. (최대 1분)'));
 
-  // 답변(또는 데드라인 fallback) 계산 → callbackUrl로 정확히 1회 POST.
-  // 계산과 전달을 분리해, 성공이든 타임아웃이든 오류든 전달은 한 번만 일어난다.
+  // 이미 돌고 있는 answerPromise를 그대로 기다림(중복 생성 X). 60초 윈도 전 데드라인.
   const bgTask = (async () => {
     let payload;
     try {
-      const answer = await withDeadline(
-        answerQuestion(question, { userId }),
-        ANSWER_DEADLINE_MS,
-        'answer-deadline',
-      );
-      payload = simpleText(answer);
-      console.log(`[callback] answer ready: ${answer.slice(0, 80)}...`);
-    } catch (err) {
-      console.error('[callback] background error:', err);
+      const r = await withDeadline(answerPromise, ANSWER_DEADLINE_MS, 'answer-deadline');
       payload = simpleText(
-        err?.message === 'answer-deadline'
-          ? '답변 생성이 지연되고 있습니다. 잠시 후 다시 질문해 주세요.'
-          : '답변 생성 중 오류가 발생했습니다. 다시 시도해 주세요.',
+        r.ok ? r.answer : '답변 생성 중 오류가 발생했습니다. 다시 시도해 주세요.',
       );
+      if (r.ok) console.log(`[callback] answer ready: ${r.answer.slice(0, 80)}...`);
+      else console.error('[callback] background error:', r.error);
+    } catch (err) {
+      payload = simpleText('답변 생성이 지연되고 있습니다. 잠시 후 다시 질문해 주세요.');
     }
     try {
       await fetch(callbackUrl, {
