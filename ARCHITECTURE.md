@@ -426,16 +426,18 @@ $$;
 
 **총 latency 목표 p95: 3초.** 5초 마진 안에서 callback 없이 처리 가능한 경우 동기로 끝.
 
-### 5.2 봇 응답 (콜백 - 영상 검색·복잡 질의)
+### 5.2 봇 응답 (콜백 - 빠른 응답 우선)
 
 ```
-카카오 → POST /kakao/skill/callback/{secret}
-  → 즉시 useCallback 응답 ("답변 생성 중... 최대 1분")  [5초 동기 SLA 안에 반환]
-  → 백그라운드: RAG full pipeline + 45초 데드라인 가드
-  → 완료(또는 데드라인 fallback) 시 callbackUrl로 1회 POST  [1분 윈도 내]
+카카오 → POST /kakao/skill/callback/{secret}  (callbackUrl 동봉)
+  → answerQuestion 시작 + SYNC_BUDGET(3.5초) 타이머 경쟁
+  ├─ 3.5초 안에 완료 → 동기로 바로 답 (대기 풍선 없음)
+  └─ 3.5초 초과     → useCallback 응답("생성 중") 반환  [5초 SLA 안]
+                      → 백그라운드: 같은 answerPromise + 45초 데드라인
+                      → callbackUrl로 1회 POST  [1분 윈도 내]
 ```
 
-**Vercel에선 `waitUntil`로 백그라운드 작업 유지**(`maxDuration:60`). callbackUrl은 1분 유효·1회용이라, 45초 데드라인을 걸어 만료 전 fallback이라도 반드시 전달한다.
+**빠른 답엔 풍선 없이 즉답, 느린 것만 콜백.** `answerQuestion`은 한 번만 실행(경쟁용·백그라운드용이 같은 promise 공유). Vercel에선 `waitUntil`로 백그라운드 유지(`maxDuration:60`). callbackUrl은 1분 유효·1회용이라 45초 데드라인으로 만료 전 fallback이라도 전달. (콜드스타트가 예산을 먹으므로 keep-warm 병행 권장.)
 
 ### 5.3 파일 업로드
 
