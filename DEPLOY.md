@@ -83,7 +83,7 @@ Supabase → Authentication → URL Configuration:
 
 **문제:** 카카오 동기 스킬은 **5초 안에** 답해야 한다(`skill timeout: 5sec`, 카카오 쪽 하드 제한). 그런데 RAG 파이프라인이 Gemini를 3번 순차 호출해 warm에서도 ~5초, 느린 구간엔 p95 20초·최대 27초까지 튄다 → 그 질문은 카카오가 버려서 **무응답**이 된다. Vercel Pro·호스트 변경으로는 못 푼다(카카오 제한이라).
 
-**해법:** 콜백 모드. 봇이 5초 안엔 "답변 생성 중..." **정적 응답만** 즉시 보내고(이건 Gemini 안 거쳐 수십ms), 실제 답변은 카카오가 준 **1회용 `callbackUrl`로 1분(60초) 안에** 비동기 전달한다. 코드(`src/app.js` `handleCallback`)는 이미 `waitUntil` + 45초 데드라인 가드로 구현돼 있다 — 남은 건 카카오 설정뿐.
+**해법:** 콜백 모드 + **빠른 응답 우선**. 봇이 답변과 `SYNC_BUDGET`(3.5초) 타이머를 경쟁시켜 — 3.5초 안에 끝나면 **동기로 바로** 답하고(대기 풍선 없음), 넘기면 그때 "생성 중"을 보내고 실답변을 카카오가 준 **1회용 `callbackUrl`로 1분(60초) 안에** 전달한다. 코드(`src/app.js` `handleCallback`)는 이미 `waitUntil` + 45초 데드라인 가드로 구현돼 있다 — 남은 건 카카오 설정뿐. (콜드스타트가 예산을 먹으니 keep-warm 병행 권장.)
 
 > 공식 근거: `callbackUrl valid time: 1min`, 1회용 (카카오 비즈니스 'AI 챗봇 콜백 개발 가이드'). 그래서 `vercel.json`의 `maxDuration`을 **60**으로 맞춰 함수가 윈도 끝까지 살아있게 했다.
 
